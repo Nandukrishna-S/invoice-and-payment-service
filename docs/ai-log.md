@@ -1,0 +1,2 @@
+- [cp11] decision | proposed: reconciler claims rows with FOR UPDATE SKIP LOCKED | chose: plain SELECT plus 5s minimum age, conditional UPDATE guards races | why: a lock held across the PSP GET keeps a transaction open over a network call
+- [cp10] decision | proposed: lock invoice first, then validate the pay request | chose: validate header and body before taking the lock | why: bad requests should never take a row lock

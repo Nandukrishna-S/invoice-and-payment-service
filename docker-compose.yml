@@ -1,0 +1,29 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: invoice
+      POSTGRES_PASSWORD: invoice
+      POSTGRES_DB: invoice
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U invoice -d invoice"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://invoice:invoice@postgres:5432/invoice?sslmode=disable
+    ports:
+      - "8080:8080"
+
+volumes:
+  pgdata:
