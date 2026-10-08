@@ -15,6 +15,7 @@ import (
 	"invoice-and-payment-service/internal/config"
 	"invoice-and-payment-service/internal/db"
 	"invoice-and-payment-service/internal/health"
+	"invoice-and-payment-service/internal/httpx"
 	"invoice-and-payment-service/migrations"
 )
 
@@ -23,7 +24,8 @@ func main() {
 	if err != nil {
 		fatal("load config", err)
 	}
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})))
+	slog.SetDefault(slog.New(httpx.NewContextHandler(
+		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -39,6 +41,9 @@ func main() {
 	defer pool.Close()
 
 	r := chi.NewRouter()
+	r.Use(httpx.RequestID, httpx.Recoverer)
+	r.NotFound(httpx.NotFound)
+	r.MethodNotAllowed(httpx.MethodNotAllowed)
 	health.RegisterRoutes(r, pool)
 
 	srv := &http.Server{

@@ -23,7 +23,7 @@ func TestHealthz(t *testing.T) {
 		wantBody   string
 	}{
 		{"database reachable", nil, http.StatusOK, `"status":"ok"`},
-		{"database down", errors.New("connection refused"), http.StatusServiceUnavailable, `"status":"unavailable"`},
+		{"database down", errors.New("connection refused"), http.StatusServiceUnavailable, `"code":"service_unavailable"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
