@@ -3,8 +3,7 @@ package migrations
 
 import "embed"
 
-// FS holds every entry in this directory; the pattern narrows to *.sql once the
-// first migration lands.
+// FS holds the API's SQL migrations; the mock PSP's live in the psp subdirectory.
 //
-//go:embed *
+//go:embed *.sql
 var FS embed.FS

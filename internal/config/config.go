@@ -16,6 +16,8 @@ type Config struct {
 	DBMaxConns      int32
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
+	// DemoAPIKey is for local development only and must never be set in production.
+	DemoAPIKey string
 }
 
 // Load returns the configuration with defaults applied, or an error naming the
@@ -27,6 +29,7 @@ func Load() (Config, error) {
 		DBMaxConns:      20,
 		LogLevel:        slog.LevelInfo,
 		ShutdownTimeout: 15 * time.Second,
+		DemoAPIKey:      os.Getenv("DEMO_API_KEY"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")

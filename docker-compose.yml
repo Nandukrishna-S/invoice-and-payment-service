@@ -22,6 +22,8 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgres://invoice:invoice@postgres:5432/invoice?sslmode=disable
+      # Local development only: lets README curls work as is. Never set in production.
+      DEMO_API_KEY: sk_test_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     ports:
       - "8080:8080"
 

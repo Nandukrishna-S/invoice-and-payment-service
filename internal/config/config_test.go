@@ -12,12 +12,13 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("DB_MAX_CONNS", "")
 	t.Setenv("LOG_LEVEL", "")
 	t.Setenv("SHUTDOWN_TIMEOUT", "")
+	t.Setenv("DEMO_API_KEY", "")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTPAddr != ":8080" || cfg.DBMaxConns != 20 || cfg.LogLevel != slog.LevelInfo || cfg.ShutdownTimeout != 15*time.Second {
+	if cfg.HTTPAddr != ":8080" || cfg.DBMaxConns != 20 || cfg.LogLevel != slog.LevelInfo || cfg.ShutdownTimeout != 15*time.Second || cfg.DemoAPIKey != "" {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -28,12 +29,13 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("DB_MAX_CONNS", "5")
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("SHUTDOWN_TIMEOUT", "3s")
+	t.Setenv("DEMO_API_KEY", "sk_test_x")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTPAddr != ":9000" || cfg.DBMaxConns != 5 || cfg.LogLevel != slog.LevelDebug || cfg.ShutdownTimeout != 3*time.Second {
+	if cfg.HTTPAddr != ":9000" || cfg.DBMaxConns != 5 || cfg.LogLevel != slog.LevelDebug || cfg.ShutdownTimeout != 3*time.Second || cfg.DemoAPIKey != "sk_test_x" {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"invoice-and-payment-service/internal/auth"
 	"invoice-and-payment-service/internal/config"
 	"invoice-and-payment-service/internal/db"
 	"invoice-and-payment-service/internal/health"
@@ -40,11 +42,25 @@ func main() {
 	}
 	defer pool.Close()
 
+	authSvc := auth.NewService(pool)
+	generatedKey, err := authSvc.Seed(ctx, cfg.DemoAPIKey)
+	if err != nil {
+		fatal("seed", err)
+	}
+	if generatedKey != "" {
+		// Printed, not logged: it is shown once and never stored in recoverable form.
+		fmt.Printf("\n  Initial API key (shown once): %s\n\n", generatedKey)
+	}
+
 	r := chi.NewRouter()
 	r.Use(httpx.RequestID, httpx.Recoverer)
 	r.NotFound(httpx.NotFound)
 	r.MethodNotAllowed(httpx.MethodNotAllowed)
-	health.RegisterRoutes(r, pool)
+	health.RegisterRoutes(r, pool) // outside the auth group: the only unauthenticated route
+
+	r.Group(func(r chi.Router) {
+		r.Use(auth.Middleware(authSvc))
+	})
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,
