@@ -106,6 +106,10 @@ func (c *Client) Charge(ctx context.Context, paymentRef uuid.UUID, cardToken str
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", paymentRef.String())
+	// Without GetBody, Go's transport will not silently resend this POST when a
+	// reused connection dies. Retrying is the reconciler's job, so that an
+	// interrupted call is reported as unknown instead of being quietly repeated.
+	req.GetBody = nil
 	return c.do(ctx, req, paymentRef, false)
 }
 

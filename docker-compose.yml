@@ -34,8 +34,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      mockpsp:
+        condition: service_started
     environment:
       DATABASE_URL: postgres://invoice:invoice@postgres:5432/invoice?sslmode=disable
+      PSP_URL: http://mockpsp:8081
       # Local development only: lets README curls work as is. Never set in production.
       DEMO_API_KEY: sk_test_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     ports:

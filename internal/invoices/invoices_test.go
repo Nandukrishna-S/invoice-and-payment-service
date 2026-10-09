@@ -16,7 +16,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"invoice-and-payment-service/internal/customers"
+	"invoice-and-payment-service/internal/psp"
 	"invoice-and-payment-service/internal/testapi"
+	"invoice-and-payment-service/internal/testpsp"
 )
 
 type lineJSON struct {
@@ -51,6 +53,10 @@ type fixture struct {
 	customer string // belongs to a
 	other    string // belongs to b
 	now      *atomic.Pointer[time.Time]
+	mock     *testpsp.Mock
+	svc      *Service
+	// queryClient asks the provider what happened, as the reconciler will.
+	queryClient *psp.Client
 }
 
 // setClock moves the service's clock, e.g. across a financial-year boundary.
@@ -69,8 +75,18 @@ func mustLoadIST() *time.Location {
 
 func setup(t *testing.T) fixture {
 	t.Helper()
-	env, now := newEnv(t)
-	f := fixture{env: env, now: now, a: env.NewTenant(t), b: env.NewTenant(t)}
+	// Most tests never pay; the defaults are only used by those that do.
+	return setupPay(t, time.Hour, 5*time.Second)
+}
+
+// setupPay starts the real mock provider. processingDelay is how long tok_timeout
+// charges stay processing; pspTotal is the pay flow's budget for a provider call.
+func setupPay(t *testing.T, processingDelay, pspTotal time.Duration) fixture {
+	t.Helper()
+	mock := testpsp.Start(t, processingDelay)
+	env, now, svc := newEnv(t, psp.NewClient(mock.URL, time.Second, pspTotal))
+	f := fixture{env: env, now: now, mock: mock, svc: svc, a: env.NewTenant(t), b: env.NewTenant(t),
+		queryClient: psp.NewClient(mock.URL, time.Second, 5*time.Second)}
 	f.customer = newCustomer(t, env, f.a.Key)
 	f.other = newCustomer(t, env, f.b.Key)
 	return f
@@ -78,18 +94,19 @@ func setup(t *testing.T) fixture {
 
 // newEnv serves the customer and invoice routes with a controllable clock
 // (starting at 2026-10-09 12:00 IST, financial year 2026-27) and the IST boundary.
-func newEnv(t *testing.T) (*testapi.Env, *atomic.Pointer[time.Time]) {
+func newEnv(t *testing.T, provider PSPClient) (*testapi.Env, *atomic.Pointer[time.Time], *Service) {
 	t.Helper()
 	now := new(atomic.Pointer[time.Time])
 	start := time.Date(2026, 10, 9, 12, 0, 0, 0, fiscalIST)
 	now.Store(&start)
+	var svc *Service
 	env := testapi.New(t, func(r chi.Router, pool *pgxpool.Pool) {
 		customers.RegisterRoutes(r, pool)
-		svc := NewService(pool, fiscalIST)
+		svc = NewService(pool, fiscalIST, provider)
 		svc.now = func() time.Time { return *now.Load() }
 		registerRoutes(r, svc)
 	})
-	return env, now
+	return env, now, svc
 }
 
 func newCustomer(t *testing.T, env *testapi.Env, key string) string {

@@ -32,4 +32,5 @@ var (
 	actionFinalize        = action{"finalize", StatusOpen, "finalized"}
 	actionVoid            = action{"void", StatusVoid, "voided"}
 	actionMarkUncollected = action{"mark_uncollectible", StatusUncollectible, "marked_uncollectible"}
+	actionPay             = action{"pay", StatusPaid, "payment_succeeded"}
 )

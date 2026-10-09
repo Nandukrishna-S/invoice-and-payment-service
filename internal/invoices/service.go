@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"invoice-and-payment-service/internal/apperr"
+	"invoice-and-payment-service/internal/payments"
 )
 
 const (
@@ -27,10 +28,13 @@ type Service struct {
 	// replaceable so tests can cross year boundaries.
 	fiscalLoc *time.Location
 	now       func() time.Time
+
+	payments *payments.Service
+	psp      PSPClient
 }
 
-func NewService(pool *pgxpool.Pool, fiscalLoc *time.Location) *Service {
-	return &Service{pool: pool, fiscalLoc: fiscalLoc, now: time.Now}
+func NewService(pool *pgxpool.Pool, fiscalLoc *time.Location, psp PSPClient) *Service {
+	return &Service{pool: pool, fiscalLoc: fiscalLoc, now: time.Now, payments: payments.NewService(), psp: psp}
 }
 
 func (s *Service) Finalize(ctx context.Context, businessID, id uuid.UUID) (Invoice, error) {
@@ -58,6 +62,17 @@ func (s *Service) apply(ctx context.Context, businessID, id uuid.UUID, a action)
 		if !canTransition(inv.Status, a.target) {
 			return invalidTransition(a, inv.Status)
 		}
+		// Taking an invoice out of collection while the provider may be charging the
+		// customer would leave a payment with nowhere to land.
+		if a.target == StatusVoid || a.target == StatusUncollectible {
+			pending, err := s.repo.hasPendingAttempt(ctx, tx, inv.ID)
+			if err != nil {
+				return err
+			}
+			if pending {
+				return ErrPaymentInProgress
+			}
+		}
 
 		// Drafts hold no number; one is drawn only when the invoice is issued.
 		var number *string
@@ -73,7 +88,7 @@ func (s *Service) apply(ctx context.Context, businessID, id uuid.UUID, a action)
 		if err != nil {
 			return err
 		}
-		if err := s.repo.insertTransition(ctx, tx, inv.ID, &inv.Status, a.target, a.reason); err != nil {
+		if err := s.repo.insertTransition(ctx, tx, inv.ID, &inv.Status, a.target, a.reason, nil); err != nil {
 			return err
 		}
 		items, err := s.repo.lineItems(ctx, tx, businessID, []uuid.UUID{inv.ID})
@@ -134,7 +149,7 @@ func (s *Service) Create(ctx context.Context, businessID uuid.UUID, in CreateInp
 		if err := s.repo.insertLineItems(ctx, tx, inv.ID, inv.LineItems); err != nil {
 			return err
 		}
-		return s.repo.insertTransition(ctx, tx, inv.ID, nil, StatusDraft, "created")
+		return s.repo.insertTransition(ctx, tx, inv.ID, nil, StatusDraft, "created", nil)
 	})
 	if err != nil {
 		return Invoice{}, err

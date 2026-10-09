@@ -95,3 +95,26 @@ func toResponses(invs []Invoice) []invoiceResponse {
 	}
 	return out
 }
+
+type payRequest struct {
+	CardToken   string `json:"card_token"`
+	AmountCents int64  `json:"amount_cents"`
+}
+
+type attemptResponse struct {
+	ID          uuid.UUID     `json:"id"`
+	InvoiceID   uuid.UUID     `json:"invoice_id"`
+	AmountCents int64         `json:"amount_cents"`
+	Status      AttemptStatus `json:"status"`
+	FailureCode *string       `json:"failure_code"`
+	PSPRefID    *string       `json:"psp_ref_id"`
+	CreatedAt   time.Time     `json:"created_at"`
+	ResolvedAt  *time.Time    `json:"resolved_at"`
+}
+
+func toAttemptResponse(a Attempt) attemptResponse {
+	return attemptResponse{
+		ID: a.ID, InvoiceID: a.InvoiceID, AmountCents: a.AmountCents, Status: a.Status,
+		FailureCode: a.FailureCode, PSPRefID: a.PSPRefID, CreatedAt: a.CreatedAt, ResolvedAt: a.ResolvedAt,
+	}
+}

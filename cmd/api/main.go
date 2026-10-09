@@ -22,6 +22,7 @@ import (
 	"invoice-and-payment-service/internal/health"
 	"invoice-and-payment-service/internal/httpx"
 	"invoice-and-payment-service/internal/invoices"
+	"invoice-and-payment-service/internal/psp"
 	"invoice-and-payment-service/migrations"
 )
 
@@ -65,7 +66,7 @@ func main() {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(authSvc))
 		customers.RegisterRoutes(r, pool)
-		invoices.RegisterRoutes(r, pool, cfg.FiscalLocation)
+		invoices.RegisterRoutes(r, pool, cfg.FiscalLocation, psp.NewClient(cfg.PSPBaseURL, cfg.PSPConnectTimeout, cfg.PSPTotalTimeout))
 	})
 
 	srv := &http.Server{

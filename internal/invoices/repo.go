@@ -19,7 +19,7 @@ type repo struct{}
 
 const (
 	invoiceColumns = `id, business_id, customer_id, status, currency, total_cents, due_date,
-		invoice_sequence_number, paid_at, created_at, updated_at`
+		invoice_sequence_number, paid_at, created_at, updated_at, latest_payment_attempt_id`
 
 	pgForeignKeyViolation = "23503"
 	pgCheckViolation      = "23514"
@@ -30,7 +30,7 @@ const (
 func scanInvoice(row pgx.Row) (Invoice, error) {
 	var inv Invoice
 	err := row.Scan(&inv.ID, &inv.BusinessID, &inv.CustomerID, &inv.Status, &inv.Currency,
-		&inv.TotalCents, &inv.DueDate, &inv.SequenceNumber, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt)
+		&inv.TotalCents, &inv.DueDate, &inv.SequenceNumber, &inv.PaidAt, &inv.CreatedAt, &inv.UpdatedAt, &inv.LatestAttemptID)
 	return inv, err
 }
 
@@ -71,11 +71,11 @@ func (repo) insertLineItems(ctx context.Context, q db.Querier, invoiceID uuid.UU
 }
 
 // insertTransition appends to the status history. from is nil for creation.
-func (repo) insertTransition(ctx context.Context, q db.Querier, invoiceID uuid.UUID, from *Status, to Status, reason string) error {
+func (repo) insertTransition(ctx context.Context, q db.Querier, invoiceID uuid.UUID, from *Status, to Status, reason string, attemptID *uuid.UUID) error {
 	_, err := q.Exec(ctx,
-		`INSERT INTO invoice_transitions (id, invoice_id, from_status, to_status, reason)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		uuid.Must(uuid.NewV7()), invoiceID, from, to, reason)
+		`INSERT INTO invoice_transitions (id, invoice_id, from_status, to_status, reason, attempt_id)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		uuid.Must(uuid.NewV7()), invoiceID, from, to, reason, attemptID)
 	return err
 }
 
@@ -222,4 +222,165 @@ func (repo) nextSequenceNumber(ctx context.Context, q db.Querier, businessID uui
 		return "", 0, errNumberExhausted
 	}
 	return prefix, n, err
+}
+
+// ---- payment attempts -------------------------------------------------------
+
+const (
+	pgUniqueViolation = "23505"
+	onePendingIndex   = "invoice_payment_attempts_one_pending"
+	idempotencyKeyPK  = "invoice_payment_idempotency_keys_pkey"
+	attemptColumns    = `a.id, a.invoice_id, a.payment_ref_id, p.amount_cents, a.status, a.failure_code, p.psp_ref_id, a.created_at, a.resolved_at`
+	attemptFromTenant = `FROM invoice_payment_attempts a
+		JOIN payments p ON p.payment_ref_id = a.payment_ref_id
+		JOIN invoices i ON i.id = a.invoice_id`
+)
+
+func scanAttempt(row pgx.Row) (Attempt, error) {
+	var a Attempt
+	err := row.Scan(&a.ID, &a.InvoiceID, &a.PaymentRefID, &a.AmountCents, &a.Status, &a.FailureCode, &a.PSPRefID, &a.CreatedAt, &a.ResolvedAt)
+	return a, err
+}
+
+// getAttempt reads one attempt, but only if its invoice belongs to the business.
+func (repo) getAttempt(ctx context.Context, q db.Querier, businessID, id uuid.UUID) (Attempt, error) {
+	a, err := scanAttempt(q.QueryRow(ctx,
+		`SELECT `+attemptColumns+` `+attemptFromTenant+` WHERE i.business_id = $1 AND a.id = $2`, businessID, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Attempt{}, ErrAttemptNotFound
+	}
+	return a, err
+}
+
+// attemptByPaymentRef is for internal resolution paths (the pay flow and the
+// reconciler), which start from a payment and have no business context. The
+// ref comes from our own tables, never from a request.
+func (repo) attemptByPaymentRef(ctx context.Context, q db.Querier, ref uuid.UUID) (Attempt, error) {
+	a, err := scanAttempt(q.QueryRow(ctx,
+		`SELECT `+attemptColumns+` `+attemptFromTenant+` WHERE a.payment_ref_id = $1`, ref))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Attempt{}, ErrAttemptNotFound
+	}
+	return a, err
+}
+
+// listAttempts returns an invoice's attempts newest first (UUIDv7 ids sort by time).
+func (repo) listAttempts(ctx context.Context, q db.Querier, businessID, invoiceID uuid.UUID) ([]Attempt, error) {
+	rows, err := q.Query(ctx,
+		`SELECT `+attemptColumns+` `+attemptFromTenant+`
+		 WHERE i.business_id = $1 AND a.invoice_id = $2 ORDER BY a.id DESC`, businessID, invoiceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Attempt{}
+	for rows.Next() {
+		a, err := scanAttempt(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (repo) invoiceExists(ctx context.Context, q db.Querier, businessID, id uuid.UUID) error {
+	var one int
+	err := q.QueryRow(ctx, `SELECT 1 FROM invoices WHERE business_id = $1 AND id = $2`, businessID, id).Scan(&one)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrNotFound
+	}
+	return err
+}
+
+func (repo) hasPendingAttempt(ctx context.Context, q db.Querier, invoiceID uuid.UUID) (bool, error) {
+	var pending bool
+	err := q.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM invoice_payment_attempts WHERE invoice_id = $1 AND status = 'pending')`,
+		invoiceID).Scan(&pending)
+	return pending, err
+}
+
+// insertAttempt records a pending attempt. If the invoice already has one, the
+// partial unique index rejects it, which is reported as payment_in_progress.
+func (repo) insertAttempt(ctx context.Context, q db.Querier, id, invoiceID, paymentRef uuid.UUID) error {
+	_, err := q.Exec(ctx,
+		`INSERT INTO invoice_payment_attempts (id, invoice_id, payment_ref_id) VALUES ($1, $2, $3)`,
+		id, invoiceID, paymentRef)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation && pgErr.ConstraintName == onePendingIndex {
+		return ErrPaymentInProgress
+	}
+	return err
+}
+
+func (repo) setLatestAttempt(ctx context.Context, q db.Querier, invoiceID, attemptID uuid.UUID) error {
+	_, err := q.Exec(ctx,
+		`UPDATE invoices SET latest_payment_attempt_id = $2, updated_at = now() WHERE id = $1`, invoiceID, attemptID)
+	return err
+}
+
+type storedKey struct {
+	hash      []byte
+	attemptID uuid.UUID
+}
+
+func (repo) findKey(ctx context.Context, q db.Querier, businessID uuid.UUID, key string) (*storedKey, error) {
+	var k storedKey
+	err := q.QueryRow(ctx,
+		`SELECT request_hash, attempt_id FROM invoice_payment_idempotency_keys WHERE business_id = $1 AND key = $2`,
+		businessID, key).Scan(&k.hash, &k.attemptID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return &k, err
+}
+
+// insertKey stores the key. Two requests with the same key for different
+// invoices don't share an invoice lock, so the primary key is what stops the
+// second one; it is reported as the key having been used with another request.
+func (repo) insertKey(ctx context.Context, q db.Querier, businessID uuid.UUID, key string, hash []byte, attemptID uuid.UUID) error {
+	_, err := q.Exec(ctx,
+		`INSERT INTO invoice_payment_idempotency_keys (business_id, key, request_hash, attempt_id) VALUES ($1, $2, $3, $4)`,
+		businessID, key, hash, attemptID)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == pgUniqueViolation && pgErr.ConstraintName == idempotencyKeyPK {
+		return ErrKeyReused
+	}
+	return err
+}
+
+// resolveAttempt records the outcome on an attempt that is still pending and
+// reports whether it did.
+func (repo) resolveAttempt(ctx context.Context, q db.Querier, id uuid.UUID, status AttemptStatus, failureCode *string) (bool, error) {
+	tag, err := q.Exec(ctx,
+		`UPDATE invoice_payment_attempts SET status = $2, failure_code = $3, resolved_at = now()
+		 WHERE id = $1 AND status = 'pending'`, id, status, failureCode)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// lockByID locks an invoice from an internal resolution path that starts from
+// an attempt, so the id is ours and not a request's.
+func (repo) lockByID(ctx context.Context, q db.Querier, id uuid.UUID) (Invoice, error) {
+	inv, err := scanInvoice(q.QueryRow(ctx, `SELECT `+invoiceColumns+` FROM invoices WHERE id = $1 FOR UPDATE`, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Invoice{}, ErrNotFound
+	}
+	return inv, err
+}
+
+// markPaid moves the invoice to paid, guarded on the status the caller checked.
+func (repo) markPaid(ctx context.Context, q db.Querier, id uuid.UUID, from Status) error {
+	tag, err := q.Exec(ctx,
+		`UPDATE invoices SET status = 'paid', paid_at = now(), updated_at = now() WHERE id = $1 AND status = $2`, id, from)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return errStaleStatus
+	}
+	return nil
 }

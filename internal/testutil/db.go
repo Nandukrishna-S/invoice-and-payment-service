@@ -53,6 +53,7 @@ func NewSchema(t testing.TB) string {
 	}
 	q := u.Query()
 	q.Set("search_path", schema)
+	q.Set("application_name", schema) // lets tests find their own sessions in pg_stat_activity
 	u.RawQuery = q.Encode()
 	return u.String()
 }

@@ -53,9 +53,11 @@ type Invoice struct {
 	DueDate        time.Time // a calendar date, held as UTC midnight
 	SequenceNumber *string
 	PaidAt         *time.Time
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LineItems      []LineItem
+	// LatestAttemptID is internal: it guards which attempt may mark the invoice paid.
+	LatestAttemptID *uuid.UUID
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	LineItems       []LineItem
 }
 
 // CreateInput is a create request after parsing, before validation.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -117,4 +118,90 @@ func (h *handler) transition(do func(*Service, context.Context, uuid.UUID, uuid.
 		}
 		httpx.WriteJSON(w, r, http.StatusOK, toResponse(inv))
 	}
+}
+
+const maxIdempotencyKeyLen = 255
+
+// pay validates the request before anything touches the database, so a bad
+// request never takes the invoice lock: header, then body, then the invoice.
+func (h *handler) pay(w http.ResponseWriter, r *http.Request) {
+	p, ok := auth.Require(w, r)
+	if !ok {
+		return
+	}
+	key := r.Header.Get("Idempotency-Key")
+	if key == "" {
+		httpx.WriteError(w, r, ErrKeyRequired)
+		return
+	}
+	if utf8.RuneCountInString(key) > maxIdempotencyKeyLen {
+		httpx.WriteError(w, r, apperr.Validation("Idempotency-Key", "must be at most 255 characters"))
+		return
+	}
+	var req payRequest
+	if err := httpx.DecodeJSON(w, r, &req); err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	id, err := httpx.PathUUID(r, "id", ErrNotFound)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+
+	attempt, err := h.svc.Pay(r.Context(), p.BusinessID, PayInput{
+		InvoiceID: id, IdempotencyKey: key, CardToken: req.CardToken, AmountCents: req.AmountCents,
+	})
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	// 200 once the provider has answered; 202 while the outcome is still unknown.
+	status := http.StatusOK
+	if !attempt.Resolved() {
+		status = http.StatusAccepted
+	}
+	httpx.WriteJSON(w, r, status, toAttemptResponse(attempt))
+}
+
+func (h *handler) getAttempt(w http.ResponseWriter, r *http.Request) {
+	p, ok := auth.Require(w, r)
+	if !ok {
+		return
+	}
+	id, err := httpx.PathUUID(r, "id", ErrAttemptNotFound)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	a, err := h.svc.GetAttempt(r.Context(), p.BusinessID, id)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, toAttemptResponse(a))
+}
+
+func (h *handler) listAttempts(w http.ResponseWriter, r *http.Request) {
+	p, ok := auth.Require(w, r)
+	if !ok {
+		return
+	}
+	id, err := httpx.PathUUID(r, "id", ErrNotFound)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	attempts, err := h.svc.ListAttempts(r.Context(), p.BusinessID, id)
+	if err != nil {
+		httpx.WriteError(w, r, err)
+		return
+	}
+	out := make([]attemptResponse, len(attempts))
+	for i, a := range attempts {
+		out[i] = toAttemptResponse(a)
+	}
+	httpx.WriteJSON(w, r, http.StatusOK, struct {
+		Data []attemptResponse `json:"data"`
+	}{out})
 }

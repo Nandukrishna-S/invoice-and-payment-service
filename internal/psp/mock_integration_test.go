@@ -2,48 +2,20 @@ package psp
 
 import (
 	"context"
-	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"invoice-and-payment-service/internal/db"
-	"invoice-and-payment-service/internal/httpx"
-	"invoice-and-payment-service/internal/mockpsp"
-	"invoice-and-payment-service/internal/testutil"
-	"invoice-and-payment-service/migrations/psp"
+	"invoice-and-payment-service/internal/testpsp"
 )
 
 // These tests run the client against the real mock provider and its real
 // database, so the wire format (psp_ref, code) is checked end to end.
 
-// startMock serves the mock with the given delay for tok_timeout charges.
 func startMock(t *testing.T, processingDelay time.Duration) string {
 	t.Helper()
-	url := testutil.NewSchema(t)
-	if err := db.Migrate(url, psp.FS, "schema_migrations"); err != nil {
-		t.Fatal(err)
-	}
-	pool, err := db.NewPool(context.Background(), url, 20)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bg, cancel := context.WithCancel(context.Background())
-	svc := mockpsp.NewService(pool, bg, processingDelay, 0)
-
-	r := chi.NewRouter()
-	r.Use(httpx.RequestID, httpx.Recoverer)
-	mockpsp.RegisterRoutes(r, svc)
-	srv := httptest.NewServer(r)
-	t.Cleanup(func() {
-		srv.Close()
-		cancel()
-		svc.Close()
-		pool.Close()
-	})
-	return srv.URL
+	return testpsp.Start(t, processingDelay).URL
 }
 
 func newRef() uuid.UUID { return uuid.Must(uuid.NewV7()) }
@@ -134,18 +106,23 @@ func TestRealProviderTimeoutIsUnknownThenResolvesToSucceeded(t *testing.T) {
 }
 
 // tok_network_error: the provider charges, then hangs up. We can't know that
-// from the response, only by asking afterwards.
+// from the response, only by asking afterwards. This must hold on a reused
+// connection too: Go would silently resend the POST there, hiding the drop and
+// bypassing the reconciler, so the client must prevent that.
 func TestRealProviderDroppedConnectionIsUnknownButTheChargeHappened(t *testing.T) {
-	// A fresh client per case: Go retries a dropped request transparently on a reused
-	// connection, which would hide the drop. Here the first request opens the connection.
-	base := startMock(t, time.Hour)
-	ref := newRef()
+	c := NewClient(startMock(t, time.Hour), time.Second, 2*time.Second)
 
-	got := NewClient(base, time.Second, 2*time.Second).Charge(context.Background(), ref, "tok_network_error", 4500)
-	if got.Status != Unknown {
-		t.Fatalf("got %+v, want Unknown", got)
+	// Warm the connection pool so the next call reuses a connection.
+	if got := c.Charge(context.Background(), newRef(), "tok_success", 100); got.Status != Succeeded {
+		t.Fatalf("warm-up: %+v", got)
 	}
-	q := NewClient(base, time.Second, 2*time.Second).Query(context.Background(), ref)
+
+	ref := newRef()
+	got := c.Charge(context.Background(), ref, "tok_network_error", 4500)
+	if got.Status != Unknown {
+		t.Fatalf("got %+v, want Unknown even on a reused connection", got)
+	}
+	q := c.Query(context.Background(), ref)
 	if q.Status != Succeeded || q.PSPRef == "" {
 		t.Fatalf("the charge happened, Query must say so: %+v", q)
 	}
