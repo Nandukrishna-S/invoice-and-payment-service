@@ -12,9 +12,10 @@ import (
 const settleTimeout = 5 * time.Second
 
 type Service struct {
-	db    db.Querier
-	repo  repo
-	delay time.Duration
+	db        db.Querier
+	repo      repo
+	delay     time.Duration // how long tok_timeout charges stay processing
+	fastDelay time.Duration // how long ordinary charges take to answer
 
 	// bg outlives any single request: a slow charge keeps settling after the
 	// caller that started it has disconnected.
@@ -23,9 +24,10 @@ type Service struct {
 }
 
 // NewService returns a service whose background settling stops when bg is
-// cancelled. Call Close after cancelling to wait for it.
-func NewService(q db.Querier, bg context.Context, processingDelay time.Duration) *Service {
-	return &Service{db: q, delay: processingDelay, bg: bg}
+// cancelled. Call Close after cancelling to wait for it. fastDelay is how long
+// success and decline answers take; tests pass 0.
+func NewService(q db.Querier, bg context.Context, processingDelay, fastDelay time.Duration) *Service {
+	return &Service{db: q, delay: processingDelay, fastDelay: fastDelay, bg: bg}
 }
 
 // Close waits for background settling to stop.
@@ -71,6 +73,12 @@ func (s *Service) Charge(ctx context.Context, key, token string, amountCents int
 			return Result{}, ctx.Err()
 		}
 		if stored, err = s.repo.get(ctx, s.db, key); err != nil {
+			return Result{}, err
+		}
+	} else if !b.dropConnection {
+		// Ordinary charges take a moment, like a real provider. The charge is already
+		// stored, so a caller that gives up here still gets charged, as in real life.
+		if err := sleep(ctx, s.fastDelay); err != nil {
 			return Result{}, err
 		}
 	}
@@ -119,4 +127,19 @@ func (s *Service) settleLater(key string) <-chan struct{} {
 		}
 	}()
 	return done
+}
+
+// sleep waits for d, or returns early with the context's error.
+func sleep(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

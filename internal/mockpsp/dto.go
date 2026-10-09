@@ -9,10 +9,10 @@ type chargeRequest struct {
 
 type chargeResponse struct {
 	IdempotencyKey string     `json:"idempotency_key"`
-	PSPRefID       string     `json:"psp_ref_id"`
+	PSPRef         string     `json:"psp_ref"`
 	AmountCents    int64      `json:"amount_cents"`
 	Status         string     `json:"status"`
-	FailureCode    *string    `json:"failure_code"`
+	Code           *string    `json:"code"`
 	CreatedAt      time.Time  `json:"created_at"`
 	CompletedAt    *time.Time `json:"completed_at"`
 }
@@ -20,10 +20,10 @@ type chargeResponse struct {
 func toResponse(c Charge) chargeResponse {
 	return chargeResponse{
 		IdempotencyKey: c.IdempotencyKey,
-		PSPRefID:       c.PSPRefID,
+		PSPRef:         c.PSPRefID,
 		AmountCents:    c.AmountCents,
 		Status:         c.Status,
-		FailureCode:    c.FailureCode,
+		Code:           c.FailureCode,
 		CreatedAt:      c.CreatedAt,
 		CompletedAt:    c.CompletedAt,
 	}

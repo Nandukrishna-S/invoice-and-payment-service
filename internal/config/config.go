@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -22,6 +23,10 @@ type Config struct {
 	DemoAPIKey string
 	// FiscalLocation is where the April-to-March financial year boundary is judged.
 	FiscalLocation *time.Location
+	// The payment provider the pay flow and reconciler call.
+	PSPBaseURL        string
+	PSPConnectTimeout time.Duration
+	PSPTotalTimeout   time.Duration
 }
 
 // Load returns the configuration with defaults applied, or an error naming the
@@ -35,9 +40,32 @@ func Load() (Config, error) {
 		ShutdownTimeout: 15 * time.Second,
 		DemoAPIKey:      os.Getenv("DEMO_API_KEY"),
 		PPROFAddr:       os.Getenv("PPROF_ADDR"),
+
+		PSPBaseURL:        envString("PSP_URL", "http://localhost:8081"),
+		PSPConnectTimeout: 2 * time.Second,
+		PSPTotalTimeout:   5 * time.Second,
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
+	}
+
+	if u, err := url.Parse(cfg.PSPBaseURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return Config{}, fmt.Errorf("PSP_URL must be an absolute http(s) URL")
+	}
+	for env, dst := range map[string]*time.Duration{
+		"PSP_CONNECT_TIMEOUT": &cfg.PSPConnectTimeout,
+		"PSP_TOTAL_TIMEOUT":   &cfg.PSPTotalTimeout,
+	} {
+		if v := os.Getenv(env); v != "" {
+			d, err := time.ParseDuration(v)
+			if err != nil || d <= 0 {
+				return Config{}, fmt.Errorf("%s must be a positive duration, got %q", env, v)
+			}
+			*dst = d
+		}
+	}
+	if cfg.PSPConnectTimeout > cfg.PSPTotalTimeout {
+		return Config{}, fmt.Errorf("PSP_CONNECT_TIMEOUT must not exceed PSP_TOTAL_TIMEOUT")
 	}
 
 	fiscalTZ := envString("FISCAL_TIMEZONE", "Asia/Kolkata")
@@ -83,6 +111,8 @@ type PSPConfig struct {
 	LogLevel    slog.Level
 	// ProcessingDelay is how long tok_timeout charges stay "processing".
 	ProcessingDelay time.Duration
+	// FastDelay is how long success and decline answers take (0 disables it).
+	FastDelay       time.Duration
 	ShutdownTimeout time.Duration
 }
 
@@ -92,6 +122,7 @@ func LoadPSP() (PSPConfig, error) {
 		DatabaseURL:     os.Getenv("DATABASE_URL"),
 		LogLevel:        slog.LevelInfo,
 		ProcessingDelay: 30 * time.Second,
+		FastDelay:       100 * time.Millisecond,
 		ShutdownTimeout: 15 * time.Second,
 	}
 	if cfg.DatabaseURL == "" {
@@ -113,6 +144,13 @@ func LoadPSP() (PSPConfig, error) {
 			}
 			*dst = d
 		}
+	}
+	if v := os.Getenv("PSP_FAST_DELAY"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 {
+			return PSPConfig{}, fmt.Errorf("PSP_FAST_DELAY must be a non-negative duration, got %q", v)
+		}
+		cfg.FastDelay = d
 	}
 	return cfg, nil
 }

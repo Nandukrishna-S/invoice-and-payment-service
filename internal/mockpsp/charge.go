@@ -12,6 +12,15 @@
 // A charge is identified by its idempotency key. Repeating a key with the same
 // parameters returns the original charge (never a second one); with different
 // parameters it is a 409. A charge is `processing`, `succeeded` or `failed`.
+//
+// The response names the PSP's reference `psp_ref` (a UUID) and a decline reason
+// `code` (`insufficient_funds` or `card_declined`), as the provider's spec does;
+// the invoice service maps them to its own psp_ref_id and failure_code.
+//
+// Tokens: tok_success, tok_insufficient_funds and tok_card_declined answer after
+// PSP_FAST_DELAY (default 100 ms). tok_timeout answers after PSP_PROCESSING_DELAY
+// (default 30 s) and is `processing` meanwhile. tok_network_error processes the
+// charge and drops the connection. Any other token is declined.
 package mockpsp
 
 import (
@@ -67,4 +76,4 @@ func behaviourFor(token string) behaviour {
 	}
 }
 
-func newPSPRefID() string { return "ch_" + uuid.Must(uuid.NewV7()).String() }
+func newPSPRefID() string { return uuid.Must(uuid.NewV7()).String() }

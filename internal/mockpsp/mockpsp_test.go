@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -43,7 +44,7 @@ func newEnv(t *testing.T, delay time.Duration) *env {
 		t.Fatal(err)
 	}
 	bg, cancel := context.WithCancel(context.Background())
-	svc := NewService(pool, bg, delay)
+	svc := NewService(pool, bg, delay, 0)
 
 	r := chi.NewRouter()
 	r.Use(httpx.RequestID, httpx.Recoverer)
@@ -64,10 +65,10 @@ func newEnv(t *testing.T, delay time.Duration) *env {
 
 type chargeJSON struct {
 	IdempotencyKey string     `json:"idempotency_key"`
-	PSPRefID       string     `json:"psp_ref_id"`
+	PSPRef         string     `json:"psp_ref"`
 	AmountCents    int64      `json:"amount_cents"`
 	Status         string     `json:"status"`
-	FailureCode    *string    `json:"failure_code"`
+	Code           *string    `json:"code"`
 	CompletedAt    *time.Time `json:"completed_at"`
 }
 
@@ -163,11 +164,11 @@ func TestTokenBehaviours(t *testing.T) {
 			r := e.charge("key-"+tt.token, tt.token, 4500)
 			c := r.charge(t)
 			if r.code != http.StatusOK || c.Status != tt.status || c.AmountCents != 4500 ||
-				!strings.HasPrefix(c.PSPRefID, "ch_") || c.CompletedAt == nil {
+				!isUUID(c.PSPRef) || c.CompletedAt == nil {
 				t.Fatalf("got %d %s", r.code, r.body)
 			}
-			if tt.failure == "" && c.FailureCode != nil || tt.failure != "" && (c.FailureCode == nil || *c.FailureCode != tt.failure) {
-				t.Fatalf("failure_code = %v, want %q", c.FailureCode, tt.failure)
+			if tt.failure == "" && c.Code != nil || tt.failure != "" && (c.Code == nil || *c.Code != tt.failure) {
+				t.Fatalf("code = %v, want %q", c.Code, tt.failure)
 			}
 		})
 	}
@@ -178,7 +179,7 @@ func TestSameKeyReturnsTheOriginalChargeAndNeverChargesTwice(t *testing.T) {
 	first := e.charge("k1", "tok_success", 1000).charge(t)
 	for i := 0; i < 3; i++ {
 		again := e.charge("k1", "tok_success", 1000)
-		if got := again.charge(t); again.code != 200 || got.PSPRefID != first.PSPRefID {
+		if got := again.charge(t); again.code != 200 || got.PSPRef != first.PSPRef {
 			t.Fatalf("replay %d returned a different charge: %s", i, again.body)
 		}
 	}
@@ -188,7 +189,7 @@ func TestSameKeyReturnsTheOriginalChargeAndNeverChargesTwice(t *testing.T) {
 
 	// A declined charge replays as declined; it is not retried.
 	declined := e.charge("k2", "tok_card_declined", 500).charge(t)
-	if again := e.charge("k2", "tok_card_declined", 500).charge(t); again.PSPRefID != declined.PSPRefID || again.Status != "failed" {
+	if again := e.charge("k2", "tok_card_declined", 500).charge(t); again.PSPRef != declined.PSPRef || again.Status != "failed" {
 		t.Fatalf("a declined charge must replay as declined: %+v", again)
 	}
 }
@@ -215,7 +216,7 @@ func TestGet(t *testing.T) {
 	made := e.charge("k1", "tok_success", 1000).charge(t)
 
 	r := e.get("k1")
-	if got := r.charge(t); r.code != 200 || got.PSPRefID != made.PSPRefID || got.Status != "succeeded" {
+	if got := r.charge(t); r.code != 200 || got.PSPRef != made.PSPRef || got.Status != "succeeded" {
 		t.Fatalf("got %d %s", r.code, r.body)
 	}
 	if r := e.get("never-used"); r.code != http.StatusNotFound || r.errorCode(t) != "charge_not_found" {
@@ -318,7 +319,7 @@ func TestOldProcessingChargesSettleLazily(t *testing.T) {
 	for key, age := range map[string]string{"old": "2 hours", "young": "1 minute"} {
 		if _, err := e.pool.Exec(ctx,
 			`INSERT INTO charges (idempotency_key, psp_ref_id, token, amount_cents, status, created_at)
-			 VALUES ($1, 'ch_'||$1, 'tok_timeout', 100, 'processing', now() - $2::interval)`, key, age); err != nil {
+			 VALUES ($1, gen_random_uuid()::text, 'tok_timeout', 100, 'processing', now() - $2::interval)`, key, age); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -333,7 +334,7 @@ func TestOldProcessingChargesSettleLazily(t *testing.T) {
 	// The same applies to a replayed POST.
 	if _, err := e.pool.Exec(ctx,
 		`INSERT INTO charges (idempotency_key, psp_ref_id, token, amount_cents, status, created_at)
-		 VALUES ('old2', 'ch_old2', 'tok_timeout', 100, 'processing', now() - interval '2 hours')`); err != nil {
+		 VALUES ('old2', gen_random_uuid()::text, 'tok_timeout', 100, 'processing', now() - interval '2 hours')`); err != nil {
 		t.Fatal(err)
 	}
 	if c := e.charge("old2", "tok_timeout", 100).charge(t); c.Status != "succeeded" {
@@ -351,12 +352,12 @@ func TestNetworkErrorProcessesTheChargeThenHangsUp(t *testing.T) {
 
 	// The charge went through: that is the dangerous part. The caller can only learn it by asking.
 	got := e.get("net").charge(t)
-	if got.Status != "succeeded" || got.PSPRefID == "" {
+	if got.Status != "succeeded" || got.PSPRef == "" {
 		t.Fatalf("the dropped call must still have charged: %+v", got)
 	}
 	// A retry gets the stored answer instead of a second charge.
 	again := e.charge("net", "tok_network_error", 700)
-	if c := again.charge(t); again.code != 200 || c.PSPRefID != got.PSPRefID {
+	if c := again.charge(t); again.code != 200 || c.PSPRef != got.PSPRef {
 		t.Fatalf("replay: %d %s", again.code, again.body)
 	}
 	if n := e.rows(t); n != 1 {
@@ -378,7 +379,7 @@ func TestConcurrentIdenticalRequestsMakeOneCharge(t *testing.T) {
 				<-start
 				r := e.charge("race-"+token, token, 900)
 				if r.err == nil && r.code == 200 {
-					refs[i] = r.charge(t).PSPRefID
+					refs[i] = r.charge(t).PSPRef
 				}
 			}()
 		}
@@ -457,5 +458,88 @@ func TestUnmatchedRoutesUseTheEnvelope(t *testing.T) {
 	}
 	if r := e.do(http.DefaultClient, http.MethodDelete, "/charges/x", "", "", nil); r.code != 405 || r.errorCode(t) != "method_not_allowed" {
 		t.Fatalf("got %d %s", r.code, r.body)
+	}
+}
+
+func isUUID(s string) bool { _, err := uuid.Parse(s); return err == nil && len(s) == 36 }
+
+// The wire format is the provider spec's: psp_ref (a bare UUID) and code, not our own field names.
+func TestResponseUsesTheProviderSpecFieldNames(t *testing.T) {
+	e := newEnv(t, time.Hour)
+	for _, token := range []string{"tok_success", "tok_card_declined"} {
+		var raw map[string]any
+		r := e.charge("shape-"+token, token, 100)
+		if err := json.Unmarshal(r.body, &raw); err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range []string{"psp_ref", "code", "status"} {
+			if _, ok := raw[field]; !ok {
+				t.Errorf("%s: response lacks %q: %s", token, field, r.body)
+			}
+		}
+		for _, banned := range []string{"psp_ref_id", "failure_code"} {
+			if _, ok := raw[banned]; ok {
+				t.Errorf("%s: response must not use our own field name %q: %s", token, banned, r.body)
+			}
+		}
+		if ref, _ := raw["psp_ref"].(string); !isUUID(ref) {
+			t.Errorf("%s: psp_ref %q must be a bare UUID", token, ref)
+		}
+	}
+}
+
+// success and decline answer after the fast delay; the delay yields to a caller that gives up.
+func TestFastTokensAnswerAfterTheFastDelay(t *testing.T) {
+	e := newEnv(t, time.Hour)
+	e.svc.fastDelay = 150 * time.Millisecond
+
+	for _, token := range []string{"tok_success", "tok_insufficient_funds", "tok_card_declined"} {
+		start := time.Now()
+		r := e.charge("fast-"+token, token, 100)
+		if r.code != 200 {
+			t.Fatalf("%s: %d %s", token, r.code, r.body)
+		}
+		if elapsed := time.Since(start); elapsed < 120*time.Millisecond || elapsed > 1500*time.Millisecond {
+			t.Errorf("%s answered after %v, want about 150ms", token, elapsed)
+		}
+	}
+
+	// A replay returns the stored answer at once; only the first call pays the delay.
+	start := time.Now()
+	e.charge("fast-tok_success", "tok_success", 100).charge(t)
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Errorf("a replay took %v", elapsed)
+	}
+
+	// tok_network_error drops the connection straight away. A fresh connection is
+	// needed: Go's transport transparently retries a request carrying an
+	// Idempotency-Key when a reused connection dies, which would hide the drop.
+	fresh := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	start = time.Now()
+	r := e.do(fresh, http.MethodPost, "/charges", "fast-net", "application/json",
+		map[string]any{"token": "tok_network_error", "amount_cents": 100})
+	if r.err == nil || time.Since(start) > 100*time.Millisecond {
+		t.Errorf("network error: err=%v after %v", r.err, time.Since(start))
+	}
+
+	// A caller that gives up during the delay is released promptly; the charge stays.
+	impatient := &http.Client{Timeout: 30 * time.Millisecond}
+	start = time.Now()
+	r = e.do(impatient, http.MethodPost, "/charges", "fast-gone", "application/json",
+		map[string]any{"token": "tok_success", "amount_cents": 100})
+	if r.err == nil || time.Since(start) > 120*time.Millisecond {
+		t.Errorf("impatient caller: err=%v after %v", r.err, time.Since(start))
+	}
+	if c := e.get("fast-gone").charge(t); c.Status != "succeeded" {
+		t.Errorf("a charge whose caller left is still made: %+v", c)
+	}
+
+	// The server side must stop waiting too, not sleep out the delay for nobody.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	start = time.Now()
+	_, err := e.svc.Charge(ctx, "fast-svc", "tok_success", 100)
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 120*time.Millisecond {
+		t.Errorf("Charge with a cancelled context: err=%v after %v, want a prompt DeadlineExceeded", err, time.Since(start))
 	}
 }

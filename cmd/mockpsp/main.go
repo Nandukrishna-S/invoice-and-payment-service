@@ -52,7 +52,7 @@ func main() {
 	}
 	defer pool.Close()
 
-	svc := mockpsp.NewService(pool, ctx, cfg.ProcessingDelay)
+	svc := mockpsp.NewService(pool, ctx, cfg.ProcessingDelay, cfg.FastDelay)
 
 	r := chi.NewRouter()
 	r.Use(httpx.RequestID, httpx.Recoverer)
@@ -71,7 +71,7 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	}
 	go func() {
-		slog.Info("mock psp listening", "addr", cfg.HTTPAddr, "processing_delay", cfg.ProcessingDelay.String())
+		slog.Info("mock psp listening", "addr", cfg.HTTPAddr, "processing_delay", cfg.ProcessingDelay.String(), "fast_delay", cfg.FastDelay.String())
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			fatal("http server", err)
 		}
