@@ -20,6 +20,7 @@ import (
 	"invoice-and-payment-service/internal/db"
 	"invoice-and-payment-service/internal/health"
 	"invoice-and-payment-service/internal/httpx"
+	"invoice-and-payment-service/internal/invoices"
 	"invoice-and-payment-service/migrations"
 )
 
@@ -63,6 +64,7 @@ func main() {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(authSvc))
 		customers.RegisterRoutes(r, pool)
+		invoices.RegisterRoutes(r, pool)
 	})
 
 	srv := &http.Server{

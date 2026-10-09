@@ -3,7 +3,6 @@ package customers
 import (
 	"net/http"
 
-	"invoice-and-payment-service/internal/apperr"
 	"invoice-and-payment-service/internal/auth"
 	"invoice-and-payment-service/internal/httpx"
 )
@@ -12,17 +11,8 @@ type handler struct {
 	svc *Service
 }
 
-func principal(w http.ResponseWriter, r *http.Request) (auth.Principal, bool) {
-	p, ok := auth.FromContext(r.Context())
-	if !ok {
-		// Reaching here means the route was registered outside the auth group.
-		httpx.WriteError(w, r, apperr.ErrInternal)
-	}
-	return p, ok
-}
-
 func (h *handler) create(w http.ResponseWriter, r *http.Request) {
-	p, ok := principal(w, r)
+	p, ok := auth.Require(w, r)
 	if !ok {
 		return
 	}
@@ -40,7 +30,7 @@ func (h *handler) create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) get(w http.ResponseWriter, r *http.Request) {
-	p, ok := principal(w, r)
+	p, ok := auth.Require(w, r)
 	if !ok {
 		return
 	}
@@ -58,7 +48,7 @@ func (h *handler) get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) list(w http.ResponseWriter, r *http.Request) {
-	p, ok := principal(w, r)
+	p, ok := auth.Require(w, r)
 	if !ok {
 		return
 	}

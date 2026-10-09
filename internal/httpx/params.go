@@ -42,7 +42,7 @@ func ParsePage(r *http.Request) (PageParams, error) {
 		p.Limit = n
 	}
 	if v := q.Get("starting_after"); v != "" {
-		id, err := parseUUID(v)
+		id, err := ParseUUID(v)
 		if err != nil {
 			return PageParams{}, apperr.Validation("starting_after", "must be a UUID")
 		}
@@ -54,16 +54,16 @@ func ParsePage(r *http.Request) (PageParams, error) {
 // PathUUID reads a UUID path parameter. A malformed value returns notFound,
 // because no resource can have that ID.
 func PathUUID(r *http.Request, name string, notFound *apperr.Error) (uuid.UUID, error) {
-	id, err := parseUUID(chi.URLParam(r, name))
+	id, err := ParseUUID(chi.URLParam(r, name))
 	if err != nil {
 		return uuid.Nil, notFound
 	}
 	return id, nil
 }
 
-// parseUUID accepts only the canonical 36-character form; uuid.Parse alone also
+// ParseUUID accepts only the canonical 36-character form; uuid.Parse alone also
 // takes braces, urn: prefixes and bare hex.
-func parseUUID(s string) (uuid.UUID, error) {
+func ParseUUID(s string) (uuid.UUID, error) {
 	if len(s) != 36 {
 		return uuid.Nil, errNotCanonicalUUID
 	}
