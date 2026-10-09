@@ -20,6 +20,8 @@ type Config struct {
 	PPROFAddr string
 	// DemoAPIKey is for local development only and must never be set in production.
 	DemoAPIKey string
+	// FiscalLocation is where the April-to-March financial year boundary is judged.
+	FiscalLocation *time.Location
 }
 
 // Load returns the configuration with defaults applied, or an error naming the
@@ -37,6 +39,13 @@ func Load() (Config, error) {
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
 	}
+
+	fiscalTZ := envString("FISCAL_TIMEZONE", "Asia/Kolkata")
+	loc, err := time.LoadLocation(fiscalTZ)
+	if err != nil {
+		return Config{}, fmt.Errorf("FISCAL_TIMEZONE must be an IANA timezone name, got %q", fiscalTZ)
+	}
+	cfg.FiscalLocation = loc
 
 	if v := os.Getenv("DB_MAX_CONNS"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 32)

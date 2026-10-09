@@ -1,9 +1,12 @@
 package invoices
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/google/uuid"
 
 	"invoice-and-payment-service/internal/apperr"
 	"invoice-and-payment-service/internal/auth"
@@ -93,4 +96,25 @@ func parseStatusFilter(r *http.Request) (*Status, error) {
 		return nil, apperr.Validation("status", fmt.Sprintf("must be one of %s", strings.Join(names, ", ")))
 	}
 	return &s, nil
+}
+
+// transition builds a handler for one of the body-less status-change endpoints.
+func (h *handler) transition(do func(*Service, context.Context, uuid.UUID, uuid.UUID) (Invoice, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := auth.Require(w, r)
+		if !ok {
+			return
+		}
+		id, err := httpx.PathUUID(r, "id", ErrNotFound)
+		if err != nil {
+			httpx.WriteError(w, r, err)
+			return
+		}
+		inv, err := do(h.svc, r.Context(), p.BusinessID, id)
+		if err != nil {
+			httpx.WriteError(w, r, err)
+			return
+		}
+		httpx.WriteJSON(w, r, http.StatusOK, toResponse(inv))
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,18 +50,46 @@ type fixture struct {
 	a, b     testapi.Tenant
 	customer string // belongs to a
 	other    string // belongs to b
+	now      *atomic.Pointer[time.Time]
+}
+
+// setClock moves the service's clock, e.g. across a financial-year boundary.
+func (f fixture) setClock(t time.Time) { f.now.Store(&t) }
+
+// fiscalIST is the production timezone for the financial-year boundary.
+var fiscalIST = mustLoadIST()
+
+func mustLoadIST() *time.Location {
+	loc, err := time.LoadLocation("Asia/Kolkata")
+	if err != nil {
+		panic(err)
+	}
+	return loc
 }
 
 func setup(t *testing.T) fixture {
 	t.Helper()
-	env := testapi.New(t, func(r chi.Router, pool *pgxpool.Pool) {
-		customers.RegisterRoutes(r, pool)
-		RegisterRoutes(r, pool)
-	})
-	f := fixture{env: env, a: env.NewTenant(t), b: env.NewTenant(t)}
+	env, now := newEnv(t)
+	f := fixture{env: env, now: now, a: env.NewTenant(t), b: env.NewTenant(t)}
 	f.customer = newCustomer(t, env, f.a.Key)
 	f.other = newCustomer(t, env, f.b.Key)
 	return f
+}
+
+// newEnv serves the customer and invoice routes with a controllable clock
+// (starting at 2026-10-09 12:00 IST, financial year 2026-27) and the IST boundary.
+func newEnv(t *testing.T) (*testapi.Env, *atomic.Pointer[time.Time]) {
+	t.Helper()
+	now := new(atomic.Pointer[time.Time])
+	start := time.Date(2026, 10, 9, 12, 0, 0, 0, fiscalIST)
+	now.Store(&start)
+	env := testapi.New(t, func(r chi.Router, pool *pgxpool.Pool) {
+		customers.RegisterRoutes(r, pool)
+		svc := NewService(pool, fiscalIST)
+		svc.now = func() time.Time { return *now.Load() }
+		registerRoutes(r, svc)
+	})
+	return env, now
 }
 
 func newCustomer(t *testing.T, env *testapi.Env, key string) string {

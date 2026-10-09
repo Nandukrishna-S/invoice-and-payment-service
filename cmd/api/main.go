@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	_ "time/tzdata" // the distroless image has no zoneinfo; FISCAL_TIMEZONE needs it
 
 	"github.com/go-chi/chi/v5"
 
@@ -64,7 +65,7 @@ func main() {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(authSvc))
 		customers.RegisterRoutes(r, pool)
-		invoices.RegisterRoutes(r, pool)
+		invoices.RegisterRoutes(r, pool, cfg.FiscalLocation)
 	})
 
 	srv := &http.Server{

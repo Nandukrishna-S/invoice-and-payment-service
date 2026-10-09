@@ -13,12 +13,14 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "")
 	t.Setenv("SHUTDOWN_TIMEOUT", "")
 	t.Setenv("DEMO_API_KEY", "")
+	t.Setenv("FISCAL_TIMEZONE", "")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTPAddr != ":8080" || cfg.DBMaxConns != 20 || cfg.LogLevel != slog.LevelInfo || cfg.ShutdownTimeout != 15*time.Second || cfg.DemoAPIKey != "" {
+	if cfg.HTTPAddr != ":8080" || cfg.DBMaxConns != 20 || cfg.LogLevel != slog.LevelInfo || cfg.ShutdownTimeout != 15*time.Second || cfg.DemoAPIKey != "" ||
+		cfg.FiscalLocation.String() != "Asia/Kolkata" {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -30,12 +32,13 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("SHUTDOWN_TIMEOUT", "3s")
 	t.Setenv("DEMO_API_KEY", "sk_test_x")
+	t.Setenv("FISCAL_TIMEZONE", "UTC")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.HTTPAddr != ":9000" || cfg.DBMaxConns != 5 || cfg.LogLevel != slog.LevelDebug || cfg.ShutdownTimeout != 3*time.Second || cfg.DemoAPIKey != "sk_test_x" {
+	if cfg.HTTPAddr != ":9000" || cfg.DBMaxConns != 5 || cfg.LogLevel != slog.LevelDebug || cfg.ShutdownTimeout != 3*time.Second || cfg.DemoAPIKey != "sk_test_x" || cfg.FiscalLocation != time.UTC {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
 }
@@ -48,6 +51,7 @@ func TestLoadInvalid(t *testing.T) {
 		{"bad log level", "LOG_LEVEL", "loud"},
 		{"bad shutdown timeout", "SHUTDOWN_TIMEOUT", "soon"},
 		{"negative shutdown timeout", "SHUTDOWN_TIMEOUT", "-1s"},
+		{"unknown timezone", "FISCAL_TIMEZONE", "Mars/Olympus"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

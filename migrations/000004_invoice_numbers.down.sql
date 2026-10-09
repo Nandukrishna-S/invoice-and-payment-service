@@ -1,0 +1,2 @@
+DROP INDEX invoices_business_sequence_number;
+DROP TABLE invoice_number_sequences;

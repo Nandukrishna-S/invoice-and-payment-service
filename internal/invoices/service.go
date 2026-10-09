@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -22,9 +23,82 @@ const (
 type Service struct {
 	pool *pgxpool.Pool
 	repo repo
+	// fiscalLoc decides which financial year a finalize belongs to; now is
+	// replaceable so tests can cross year boundaries.
+	fiscalLoc *time.Location
+	now       func() time.Time
 }
 
-func NewService(pool *pgxpool.Pool) *Service { return &Service{pool: pool} }
+func NewService(pool *pgxpool.Pool, fiscalLoc *time.Location) *Service {
+	return &Service{pool: pool, fiscalLoc: fiscalLoc, now: time.Now}
+}
+
+func (s *Service) Finalize(ctx context.Context, businessID, id uuid.UUID) (Invoice, error) {
+	return s.apply(ctx, businessID, id, actionFinalize)
+}
+
+func (s *Service) Void(ctx context.Context, businessID, id uuid.UUID) (Invoice, error) {
+	return s.apply(ctx, businessID, id, actionVoid)
+}
+
+func (s *Service) MarkUncollectible(ctx context.Context, businessID, id uuid.UUID) (Invoice, error) {
+	return s.apply(ctx, businessID, id, actionMarkUncollected)
+}
+
+// apply performs one user-triggered status change: lock the invoice, check the
+// state machine, update guarded by the old status, and append the transition,
+// all in one transaction so a failure at any step leaves nothing behind.
+func (s *Service) apply(ctx context.Context, businessID, id uuid.UUID, a action) (Invoice, error) {
+	var out Invoice
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		inv, err := s.repo.lockForUpdate(ctx, tx, businessID, id)
+		if err != nil {
+			return err
+		}
+		if !canTransition(inv.Status, a.target) {
+			return invalidTransition(a, inv.Status)
+		}
+
+		// Drafts hold no number; one is drawn only when the invoice is issued.
+		var number *string
+		if a.target == StatusOpen {
+			n, err := s.nextInvoiceNumber(ctx, tx, businessID)
+			if err != nil {
+				return err
+			}
+			number = &n
+		}
+
+		updatedAt, err := s.repo.updateStatus(ctx, tx, inv.ID, inv.Status, a.target, number)
+		if err != nil {
+			return err
+		}
+		if err := s.repo.insertTransition(ctx, tx, inv.ID, &inv.Status, a.target, a.reason); err != nil {
+			return err
+		}
+		items, err := s.repo.lineItems(ctx, tx, businessID, []uuid.UUID{inv.ID})
+		if err != nil {
+			return err
+		}
+
+		inv.Status, inv.UpdatedAt, inv.LineItems = a.target, updatedAt, items[inv.ID]
+		if number != nil {
+			inv.SequenceNumber = number
+		}
+		out = inv
+		return nil
+	})
+	return out, err
+}
+
+func (s *Service) nextInvoiceNumber(ctx context.Context, tx pgx.Tx, businessID uuid.UUID) (string, error) {
+	fy := fiscalYear(s.now(), s.fiscalLoc)
+	prefix, n, err := s.repo.nextSequenceNumber(ctx, tx, businessID, fy)
+	if err != nil {
+		return "", err
+	}
+	return formatInvoiceNumber(prefix, n, fy), nil
+}
 
 // Create validates the request, computes the totals on the server, checks them
 // against the client's expectation, and stores the draft, its lines and the

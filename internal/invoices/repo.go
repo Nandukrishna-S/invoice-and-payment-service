@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -21,7 +22,9 @@ const (
 		invoice_sequence_number, paid_at, created_at, updated_at`
 
 	pgForeignKeyViolation = "23503"
+	pgCheckViolation      = "23514"
 	customerFKConstraint  = "invoices_customer_fk"
+	counterRangeCheck     = "invoice_number_counter_range"
 )
 
 func scanInvoice(row pgx.Row) (Invoice, error) {
@@ -174,4 +177,49 @@ func (repo) lineItems(ctx context.Context, q db.Querier, businessID uuid.UUID, i
 		out[id] = append(out[id], l)
 	}
 	return out, rows.Err()
+}
+
+// lockForUpdate reads the invoice header and holds its row lock until the
+// transaction ends, so every status change on one invoice is serialised.
+func (repo) lockForUpdate(ctx context.Context, q db.Querier, businessID, id uuid.UUID) (Invoice, error) {
+	inv, err := scanInvoice(q.QueryRow(ctx,
+		`SELECT `+invoiceColumns+` FROM invoices WHERE business_id = $1 AND id = $2 FOR UPDATE`, businessID, id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Invoice{}, ErrNotFound
+	}
+	return inv, err
+}
+
+// updateStatus moves the invoice from one status to another, optionally
+// recording its sequence number. The WHERE on the old status means a change
+// can only apply to the state the caller actually checked.
+func (repo) updateStatus(ctx context.Context, q db.Querier, id uuid.UUID, from, to Status, sequenceNumber *string) (time.Time, error) {
+	var updatedAt time.Time
+	err := q.QueryRow(ctx,
+		`UPDATE invoices
+		 SET status = $3, invoice_sequence_number = COALESCE($4, invoice_sequence_number), updated_at = now()
+		 WHERE id = $1 AND status = $2
+		 RETURNING updated_at`, id, from, to, sequenceNumber).Scan(&updatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, errStaleStatus
+	}
+	return updatedAt, err
+}
+
+// nextSequenceNumber takes the next counter value for the business and
+// financial year, creating the counter on first use. The row lock it takes is
+// held until the transaction ends, so a rollback leaves no gap.
+func (repo) nextSequenceNumber(ctx context.Context, q db.Querier, businessID uuid.UUID, fiscalYear int) (prefix string, n int64, err error) {
+	err = q.QueryRow(ctx,
+		`INSERT INTO invoice_number_sequences (business_id, fiscal_year, last_value)
+		 VALUES ($1, $2, 1)
+		 ON CONFLICT (business_id, fiscal_year)
+		 DO UPDATE SET last_value = invoice_number_sequences.last_value + 1
+		 RETURNING prefix, last_value`, businessID, fiscalYear).Scan(&prefix, &n)
+
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == pgCheckViolation && pgErr.ConstraintName == counterRangeCheck {
+		return "", 0, errNumberExhausted
+	}
+	return prefix, n, err
 }
