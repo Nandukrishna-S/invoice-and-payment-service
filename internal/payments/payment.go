@@ -31,3 +31,20 @@ type Payment struct {
 	CreatedAt   time.Time
 	ResolvedAt  *time.Time
 }
+
+// PendingRef identifies an in-flight payment for the reconciler.
+type PendingRef struct {
+	RefID     uuid.UUID
+	CreatedAt time.Time
+}
+
+// PendingCursor is a position in the oldest-first list of pending payments.
+// The zero value is the start.
+type PendingCursor struct {
+	CreatedAt time.Time
+	RefID     uuid.UUID
+}
+
+func (p PendingRef) Cursor() PendingCursor {
+	return PendingCursor{CreatedAt: p.CreatedAt, RefID: p.RefID}
+}

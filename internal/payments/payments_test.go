@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -279,6 +280,74 @@ func TestPendingIndexCoversOnlyInFlightPayments(t *testing.T) {
 	for _, want := range []string{"created_at", "status = 'pending'"} {
 		if !strings.Contains(def, want) {
 			t.Fatalf("index definition %q should contain %q", def, want)
+		}
+	}
+}
+
+// The reconciler's scan: only pending payments, only old enough, oldest first, with a
+// cursor that never skips or repeats a row (even ones created at the same instant).
+func TestPendingPage(t *testing.T) {
+	pool := testdb.New(t)
+	svc := NewService()
+	age := func(ref uuid.UUID, d string) {
+		if _, err := pool.Exec(ctx, `UPDATE payments SET created_at = now() - $2::interval WHERE payment_ref_id = $1`, ref, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldest := newPayment(t, pool, 100)
+	age(oldest.RefID, "3 hours")
+	older := newPayment(t, pool, 100)
+	age(older.RefID, "2 hours")
+	young := newPayment(t, pool, 100) // just created
+	resolved := newPayment(t, pool, 100)
+	age(resolved.RefID, "5 hours")
+	if _, err := svc.Resolve(ctx, pool, resolved.RefID, psp.Outcome{Status: psp.Succeeded, PSPRef: "x"}); err != nil {
+		t.Fatal(err)
+	}
+
+	page, err := svc.PendingPage(ctx, pool, time.Minute, PendingCursor{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 2 || page[0].RefID != oldest.RefID || page[1].RefID != older.RefID {
+		t.Fatalf("got %+v, want the two old pending payments, oldest first (not the young or resolved ones)", page)
+	}
+	for _, p := range page {
+		if p.RefID == young.RefID || p.RefID == resolved.RefID {
+			t.Fatalf("%s must not be listed", p.RefID)
+		}
+	}
+
+	// Paging walks the same list exactly once, including rows with identical timestamps.
+	same := make([]uuid.UUID, 5)
+	for i := range same {
+		same[i] = newPayment(t, pool, 100).RefID
+		age(same[i], "1 hour")
+	}
+	if _, err := pool.Exec(ctx, `UPDATE payments SET created_at = (SELECT created_at FROM payments WHERE payment_ref_id = $1) WHERE payment_ref_id = ANY($2)`, same[0], same); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[uuid.UUID]int{}
+	var cursor PendingCursor
+	for {
+		page, err := svc.PendingPage(ctx, pool, time.Minute, cursor, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, p := range page {
+			seen[p.RefID]++
+		}
+		cursor = page[len(page)-1].Cursor()
+	}
+	if len(seen) != 7 {
+		t.Fatalf("paging saw %d payments, want 7", len(seen))
+	}
+	for ref, n := range seen {
+		if n != 1 {
+			t.Errorf("%s listed %d times", ref, n)
 		}
 	}
 }

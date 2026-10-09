@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"invoice-and-payment-service/internal/psp"
+	"invoice-and-payment-service/internal/reconciler"
 	"invoice-and-payment-service/internal/testapi"
 )
 
@@ -175,22 +176,21 @@ func TestPayTokensMatchTheSpec(t *testing.T) {
 	})
 }
 
-// The reconciler arrives in the next checkpoint; until then this plays its part by
-// asking the provider and feeding the answer to ResolvePayment.
+// reconcile runs the real reconciler until the attempt's payment has been settled by
+// the provider's answer (the provider may still be working on it for a while).
 func reconcile(t testing.TB, f fixture, att attemptJSON) {
 	t.Helper()
-	ref := f.paymentRef(t, att.ID)
+	rec := reconciler.New(f.env.Pool, f.queryClient, f.svc, 0)
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		out := f.queryClient.Query(context.Background(), ref)
-		if out.Definitive() {
-			if err := f.svc.ResolvePayment(context.Background(), ref, out); err != nil {
-				t.Fatalf("resolve: %v", err)
-			}
+		if _, err := rec.RunOnce(context.Background()); err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+		if got := attemptOf(t, f.env.Do(t, f.a.Key, http.MethodGet, "/payment_attempts/"+att.ID, nil)); got.Status != "pending" {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the provider never gave a definitive answer: %+v", out)
+			t.Fatal("the reconciler did not settle the attempt in time")
 		}
 		time.Sleep(30 * time.Millisecond)
 	}

@@ -17,6 +17,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("PSP_URL", "")
 	t.Setenv("PSP_CONNECT_TIMEOUT", "")
 	t.Setenv("PSP_TOTAL_TIMEOUT", "")
+	t.Setenv("RECONCILER_POLL_INTERVAL", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -24,7 +25,8 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.HTTPAddr != ":8080" || cfg.DBMaxConns != 20 || cfg.LogLevel != slog.LevelInfo || cfg.ShutdownTimeout != 15*time.Second || cfg.DemoAPIKey != "" ||
 		cfg.FiscalLocation.String() != "Asia/Kolkata" || cfg.PSPBaseURL != "http://localhost:8081" ||
-		cfg.PSPConnectTimeout != 2*time.Second || cfg.PSPTotalTimeout != 5*time.Second {
+		cfg.PSPConnectTimeout != 2*time.Second || cfg.PSPTotalTimeout != 5*time.Second ||
+		cfg.ReconcilerPollInterval != 5*time.Second {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -40,13 +42,14 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("PSP_URL", "http://mockpsp:8081")
 	t.Setenv("PSP_CONNECT_TIMEOUT", "500ms")
 	t.Setenv("PSP_TOTAL_TIMEOUT", "3s")
+	t.Setenv("RECONCILER_POLL_INTERVAL", "750ms")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.HTTPAddr != ":9000" || cfg.DBMaxConns != 5 || cfg.LogLevel != slog.LevelDebug || cfg.ShutdownTimeout != 3*time.Second || cfg.DemoAPIKey != "sk_test_x" || cfg.FiscalLocation != time.UTC ||
-		cfg.PSPBaseURL != "http://mockpsp:8081" || cfg.PSPConnectTimeout != 500*time.Millisecond || cfg.PSPTotalTimeout != 3*time.Second {
+		cfg.PSPBaseURL != "http://mockpsp:8081" || cfg.PSPConnectTimeout != 500*time.Millisecond || cfg.PSPTotalTimeout != 3*time.Second || cfg.ReconcilerPollInterval != 750*time.Millisecond {
 		t.Fatalf("unexpected config: %+v", cfg)
 	}
 }
@@ -66,6 +69,8 @@ func TestLoadInvalid(t *testing.T) {
 		{"bad psp connect timeout", "PSP_CONNECT_TIMEOUT", "fast"},
 		{"zero psp total timeout", "PSP_TOTAL_TIMEOUT", "0s"},
 		{"connect timeout above total", "PSP_CONNECT_TIMEOUT", "10s"},
+		{"bad reconciler interval", "RECONCILER_POLL_INTERVAL", "often"},
+		{"zero reconciler interval", "RECONCILER_POLL_INTERVAL", "0s"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

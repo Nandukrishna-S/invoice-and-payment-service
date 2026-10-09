@@ -3,6 +3,7 @@ package payments
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -47,4 +48,31 @@ func scan(row pgx.Row) (Payment, error) {
 	var p Payment
 	err := row.Scan(&p.RefID, &p.AmountCents, &p.Status, &p.PSPRefID, &p.FailureCode, &p.CreatedAt, &p.ResolvedAt)
 	return p, err
+}
+
+// pendingPage returns pending payments at least minAge old, oldest first, after
+// the cursor. Keyset paging walks all of them each sweep, so payments that stay
+// pending (say, ones the provider has never heard of) cannot starve newer ones.
+func (repo) pendingPage(ctx context.Context, q db.Querier, minAge time.Duration, after PendingCursor, limit int) ([]PendingRef, error) {
+	rows, err := q.Query(ctx,
+		`SELECT payment_ref_id, created_at FROM payments
+		 WHERE status = 'pending'
+		   AND created_at <= now() - ($1::bigint * interval '1 millisecond')
+		   AND (created_at, payment_ref_id) > ($2, $3)
+		 ORDER BY created_at, payment_ref_id
+		 LIMIT $4`,
+		minAge.Milliseconds(), after.CreatedAt, after.RefID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PendingRef
+	for rows.Next() {
+		var p PendingRef
+		if err := rows.Scan(&p.RefID, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }

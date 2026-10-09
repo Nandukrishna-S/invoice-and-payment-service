@@ -9,6 +9,7 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 	_ "time/tzdata" // the distroless image has no zoneinfo; FISCAL_TIMEZONE needs it
@@ -23,6 +24,7 @@ import (
 	"invoice-and-payment-service/internal/httpx"
 	"invoice-and-payment-service/internal/invoices"
 	"invoice-and-payment-service/internal/psp"
+	"invoice-and-payment-service/internal/reconciler"
 	"invoice-and-payment-service/migrations"
 )
 
@@ -57,6 +59,9 @@ func main() {
 		fmt.Printf("\n  Initial API key (shown once): %s\n\n", generatedKey)
 	}
 
+	pspClient := psp.NewClient(cfg.PSPBaseURL, cfg.PSPConnectTimeout, cfg.PSPTotalTimeout)
+	invoiceSvc := invoices.NewService(pool, cfg.FiscalLocation, pspClient)
+
 	r := chi.NewRouter()
 	r.Use(httpx.RequestID, httpx.Recoverer)
 	r.NotFound(httpx.NotFound)
@@ -66,7 +71,7 @@ func main() {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(authSvc))
 		customers.RegisterRoutes(r, pool)
-		invoices.RegisterRoutes(r, pool, cfg.FiscalLocation, psp.NewClient(cfg.PSPBaseURL, cfg.PSPConnectTimeout, cfg.PSPTotalTimeout))
+		invoices.RegisterRoutes(r, invoiceSvc)
 	})
 
 	srv := &http.Server{
@@ -90,6 +95,16 @@ func main() {
 		pprofSrv = startPprof(cfg.PPROFAddr)
 	}
 
+	// Unknown payment outcomes are settled by asking the provider. It stops with the
+	// context, and shutdown waits for it so an in-flight resolution finishes
+	// (or rolls back) before the pool closes.
+	var workers sync.WaitGroup
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		reconciler.New(pool, pspClient, invoiceSvc, cfg.PSPTotalTimeout).Run(ctx, cfg.ReconcilerPollInterval)
+	}()
+
 	<-ctx.Done()
 	stop() // restore default signal handling so a second Ctrl-C kills a stuck shutdown
 
@@ -102,6 +117,7 @@ func main() {
 	if pprofSrv != nil {
 		_ = pprofSrv.Shutdown(shutdownCtx)
 	}
+	workers.Wait()
 }
 
 // startPprof serves profiling endpoints on their own listener, never on the

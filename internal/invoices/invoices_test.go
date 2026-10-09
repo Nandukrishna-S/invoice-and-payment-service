@@ -104,7 +104,7 @@ func newEnv(t *testing.T, provider PSPClient) (*testapi.Env, *atomic.Pointer[tim
 		customers.RegisterRoutes(r, pool)
 		svc = NewService(pool, fiscalIST, provider)
 		svc.now = func() time.Time { return *now.Load() }
-		registerRoutes(r, svc)
+		RegisterRoutes(r, svc)
 	})
 	return env, now, svc
 }

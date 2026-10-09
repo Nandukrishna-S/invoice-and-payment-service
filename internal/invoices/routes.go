@@ -1,20 +1,10 @@
 package invoices
 
-import (
-	"time"
+import "github.com/go-chi/chi/v5"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-)
-
-// RegisterRoutes mounts the invoice and payment endpoints. fiscalLoc is the
-// timezone in which the April-to-March financial year boundary is judged, and
-// psp is the payment provider the pay flow charges.
-func RegisterRoutes(r chi.Router, pool *pgxpool.Pool, fiscalLoc *time.Location, psp PSPClient) {
-	registerRoutes(r, NewService(pool, fiscalLoc, psp))
-}
-
-func registerRoutes(r chi.Router, svc *Service) {
+// RegisterRoutes mounts the invoice and payment endpoints. The service is built
+// by the caller because the reconciler needs the very same one.
+func RegisterRoutes(r chi.Router, svc *Service) {
 	h := &handler{svc: svc}
 	r.Post("/invoices", h.create)
 	r.Get("/invoices", h.list)

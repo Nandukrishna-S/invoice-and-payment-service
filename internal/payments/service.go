@@ -3,6 +3,7 @@ package payments
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -45,4 +46,10 @@ func (s *Service) Resolve(ctx context.Context, q db.Querier, ref uuid.UUID, o ps
 	default:
 		return false, fmt.Errorf("%w: %q", ErrNotDefinitive, o.Status)
 	}
+}
+
+// PendingPage lists pending payments old enough for the reconciler to ask the
+// provider about. The age is measured on the database clock.
+func (s *Service) PendingPage(ctx context.Context, q db.Querier, minAge time.Duration, after PendingCursor, limit int) ([]PendingRef, error) {
+	return s.repo.pendingPage(ctx, q, minAge, after, limit)
 }

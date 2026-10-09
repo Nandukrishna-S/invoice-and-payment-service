@@ -27,6 +27,9 @@ type Config struct {
 	PSPBaseURL        string
 	PSPConnectTimeout time.Duration
 	PSPTotalTimeout   time.Duration
+	// ReconcilerPollInterval is how often unresolved payments are re-checked
+	// with the provider. Kept short in the demo so tok_timeout resolves quickly.
+	ReconcilerPollInterval time.Duration
 }
 
 // Load returns the configuration with defaults applied, or an error naming the
@@ -44,6 +47,8 @@ func Load() (Config, error) {
 		PSPBaseURL:        envString("PSP_URL", "http://localhost:8081"),
 		PSPConnectTimeout: 2 * time.Second,
 		PSPTotalTimeout:   5 * time.Second,
+
+		ReconcilerPollInterval: 5 * time.Second,
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")
@@ -53,8 +58,9 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("PSP_URL must be an absolute http(s) URL")
 	}
 	for env, dst := range map[string]*time.Duration{
-		"PSP_CONNECT_TIMEOUT": &cfg.PSPConnectTimeout,
-		"PSP_TOTAL_TIMEOUT":   &cfg.PSPTotalTimeout,
+		"PSP_CONNECT_TIMEOUT":      &cfg.PSPConnectTimeout,
+		"PSP_TOTAL_TIMEOUT":        &cfg.PSPTotalTimeout,
+		"RECONCILER_POLL_INTERVAL": &cfg.ReconcilerPollInterval,
 	} {
 		if v := os.Getenv(env); v != "" {
 			d, err := time.ParseDuration(v)
