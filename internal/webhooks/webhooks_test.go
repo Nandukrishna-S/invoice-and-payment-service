@@ -46,6 +46,14 @@ func TestSecretFormatAndDecoding(t *testing.T) {
 	}
 }
 
+func TestSecretKeyAcceptsTheStandardLengths(t *testing.T) {
+	for _, n := range []int{16, 24, 32, 64} {
+		if _, err := SecretKey("whsec_" + base64.StdEncoding.EncodeToString(make([]byte, n))); err != nil {
+			t.Errorf("%d-byte key should be accepted: %v", n, err)
+		}
+	}
+}
+
 func TestSecretKeyRejectsMalformedSecrets(t *testing.T) {
 	short := "whsec_" + base64.StdEncoding.EncodeToString([]byte("too short"))
 	for name, s := range map[string]string{
@@ -261,7 +269,7 @@ type outboxEnv struct {
 func setupOutbox(t *testing.T) outboxEnv {
 	t.Helper()
 	env, a, b := setup(t)
-	return outboxEnv{env: env, outbox: NewOutbox(), a: a, b: b}
+	return outboxEnv{env: env, outbox: NewOutbox(0), a: a, b: b}
 }
 
 func (o outboxEnv) enqueue(t *testing.T, businessID uuid.UUID, eventType string, snapshot func(context.Context) (any, error)) error {

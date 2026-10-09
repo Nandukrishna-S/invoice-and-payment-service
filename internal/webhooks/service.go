@@ -70,9 +70,14 @@ func validateURL(raw string) error {
 // it works on the caller's transaction, not on its own connection.
 type Outbox struct {
 	repo repo
+	// firstAttemptDelay is the retry schedule's first entry: how long a new
+	// delivery waits before its first attempt (normally none).
+	firstAttemptDelay time.Duration
 }
 
-func NewOutbox() *Outbox { return &Outbox{} }
+func NewOutbox(firstAttemptDelay time.Duration) *Outbox {
+	return &Outbox{firstAttemptDelay: firstAttemptDelay}
+}
 
 // Enqueue queues one event for every active endpoint of the business, using the
 // caller's transaction q, so the event exists if and only if the surrounding
@@ -99,7 +104,7 @@ func (o *Outbox) Enqueue(ctx context.Context, q db.Querier, businessID uuid.UUID
 	if err != nil {
 		return fmt.Errorf("encode %s: %w", eventType, err)
 	}
-	if err := o.repo.insertDeliveries(ctx, q, eventID, eventType, payload, endpoints); err != nil {
+	if err := o.repo.insertDeliveries(ctx, q, eventID, eventType, payload, endpoints, o.firstAttemptDelay); err != nil {
 		return fmt.Errorf("queue %s: %w", eventType, err)
 	}
 	return nil

@@ -61,7 +61,7 @@ func main() {
 	}
 
 	pspClient := psp.NewClient(cfg.PSPBaseURL, cfg.PSPConnectTimeout, cfg.PSPTotalTimeout)
-	invoiceSvc := invoices.NewService(pool, cfg.FiscalLocation, pspClient, webhooks.NewOutbox())
+	invoiceSvc := invoices.NewService(pool, cfg.FiscalLocation, pspClient, webhooks.NewOutbox(cfg.WebhookRetrySchedule[0]))
 
 	r := chi.NewRouter()
 	r.Use(httpx.RequestID, httpx.Recoverer)
@@ -105,6 +105,13 @@ func main() {
 	go func() {
 		defer workers.Done()
 		reconciler.New(pool, pspClient, invoiceSvc, cfg.PSPTotalTimeout).Run(ctx, cfg.ReconcilerPollInterval)
+	}()
+
+	// Queued webhook events are delivered by a second worker with the same lifecycle.
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		webhooks.NewDispatcher(pool, cfg.WebhookRetrySchedule, cfg.WebhookHTTPTimeout).Run(ctx, cfg.WebhookPollInterval)
 	}()
 
 	<-ctx.Done()

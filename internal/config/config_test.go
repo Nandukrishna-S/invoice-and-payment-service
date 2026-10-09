@@ -130,3 +130,88 @@ func TestLoadPSPInvalid(t *testing.T) {
 		})
 	}
 }
+
+func TestParseRetrySchedule(t *testing.T) {
+	good := map[string][]time.Duration{
+		DefaultWebhookRetrySchedule: {0, 30 * time.Second, 2 * time.Minute, 10 * time.Minute, time.Hour, 6 * time.Hour, 12 * time.Hour},
+		"0s":                        {0},
+		" 0s , 1s ,2s ":             {0, time.Second, 2 * time.Second},
+		"5s,10s":                    {5 * time.Second, 10 * time.Second}, // the first entry may be non-zero
+	}
+	for in, want := range good {
+		got, err := ParseRetrySchedule(in)
+		if err != nil || len(got) != len(want) {
+			t.Errorf("%q: got %v, %v", in, got, err)
+			continue
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("%q: entry %d = %v, want %v", in, i, got[i], want[i])
+			}
+		}
+	}
+	for _, in := range []string{"", "soon", "0s,", "0s,0s", "0s,-1s", "-5s,1s", "1s,,2s", "0s,5"} {
+		if _, err := ParseRetrySchedule(in); err == nil {
+			t.Errorf("%q should be rejected", in)
+		}
+	}
+}
+
+func TestLoadWebhookSettings(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	for _, k := range []string{"WEBHOOK_RETRY_SCHEDULE", "WEBHOOK_POLL_INTERVAL", "WEBHOOK_HTTP_TIMEOUT"} {
+		t.Setenv(k, "")
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.WebhookRetrySchedule) != 7 || cfg.WebhookRetrySchedule[0] != 0 || cfg.WebhookPollInterval != time.Second || cfg.WebhookHTTPTimeout != 5*time.Second {
+		t.Fatalf("defaults: %+v", cfg)
+	}
+
+	t.Setenv("WEBHOOK_RETRY_SCHEDULE", "0s,1s,2s")
+	t.Setenv("WEBHOOK_POLL_INTERVAL", "250ms")
+	t.Setenv("WEBHOOK_HTTP_TIMEOUT", "3s")
+	cfg, err = Load()
+	if err != nil || len(cfg.WebhookRetrySchedule) != 3 || cfg.WebhookPollInterval != 250*time.Millisecond || cfg.WebhookHTTPTimeout != 3*time.Second {
+		t.Fatalf("overrides: %+v %v", cfg, err)
+	}
+
+	t.Setenv("WEBHOOK_HTTP_TIMEOUT", "20s")
+	t.Setenv("WEBHOOK_RETRY_SCHEDULE", "0s,1s")
+	t.Setenv("WEBHOOK_POLL_INTERVAL", "1s")
+	if _, err := Load(); err != nil {
+		t.Fatalf("20s is the longest allowed timeout: %v", err)
+	}
+	for _, bad := range []struct{ k, v string }{{"WEBHOOK_RETRY_SCHEDULE", "0s,0s"}, {"WEBHOOK_POLL_INTERVAL", "0s"}, {"WEBHOOK_HTTP_TIMEOUT", "never"}, {"WEBHOOK_HTTP_TIMEOUT", "21s"}, {"WEBHOOK_HTTP_TIMEOUT", "1m"}} {
+		t.Setenv("WEBHOOK_RETRY_SCHEDULE", "0s,1s")
+		t.Setenv("WEBHOOK_POLL_INTERVAL", "1s")
+		t.Setenv("WEBHOOK_HTTP_TIMEOUT", "5s")
+		t.Setenv(bad.k, bad.v)
+		if _, err := Load(); err == nil {
+			t.Errorf("%s=%q should be rejected", bad.k, bad.v)
+		}
+	}
+}
+
+func TestLoadReceiver(t *testing.T) {
+	t.Setenv("RECEIVER_ADDR", "")
+	t.Setenv("RECEIVER_WEBHOOK_SECRET", "")
+	t.Setenv("LOG_LEVEL", "")
+	cfg, err := LoadReceiver()
+	if err != nil || cfg.Addr != ":9000" || cfg.Secret != "" || cfg.LogLevel != slog.LevelInfo {
+		t.Fatalf("defaults: %+v %v", cfg, err)
+	}
+	t.Setenv("RECEIVER_ADDR", ":9999")
+	t.Setenv("RECEIVER_WEBHOOK_SECRET", "whsec_x")
+	t.Setenv("LOG_LEVEL", "debug")
+	cfg, err = LoadReceiver()
+	if err != nil || cfg.Addr != ":9999" || cfg.Secret != "whsec_x" || cfg.LogLevel != slog.LevelDebug {
+		t.Fatalf("overrides: %+v %v", cfg, err)
+	}
+	t.Setenv("LOG_LEVEL", "loud")
+	if _, err := LoadReceiver(); err == nil {
+		t.Fatal("a bad log level should be rejected")
+	}
+}

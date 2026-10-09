@@ -104,7 +104,7 @@ func newEnv(t *testing.T, provider PSPClient) (*testapi.Env, *atomic.Pointer[tim
 	env := testapi.New(t, func(r chi.Router, pool *pgxpool.Pool) {
 		customers.RegisterRoutes(r, pool)
 		webhooks.RegisterRoutes(r, pool)
-		svc = NewService(pool, fiscalIST, provider, webhooks.NewOutbox())
+		svc = NewService(pool, fiscalIST, provider, webhooks.NewOutbox(0))
 		svc.now = func() time.Time { return *now.Load() }
 		RegisterRoutes(r, svc)
 	})

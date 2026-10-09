@@ -2,6 +2,7 @@ package webhooks
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -59,15 +60,15 @@ func (repo) activeEndpointIDs(ctx context.Context, q db.Querier, businessID uuid
 }
 
 // insertDeliveries queues the same event for several endpoints in one statement.
-func (repo) insertDeliveries(ctx context.Context, q db.Querier, eventID, eventType string, payload []byte, endpointIDs []uuid.UUID) error {
+func (repo) insertDeliveries(ctx context.Context, q db.Querier, eventID, eventType string, payload []byte, endpointIDs []uuid.UUID, firstAttemptDelay time.Duration) error {
 	ids := make([]uuid.UUID, len(endpointIDs))
 	for i := range ids {
 		ids[i] = uuid.Must(uuid.NewV7())
 	}
 	_, err := q.Exec(ctx,
-		`INSERT INTO webhook_deliveries (id, event_id, endpoint_id, type, payload)
-		 SELECT d.id, $1, d.endpoint_id, $2, $3::jsonb
+		`INSERT INTO webhook_deliveries (id, event_id, endpoint_id, type, payload, next_attempt_at)
+		 SELECT d.id, $1, d.endpoint_id, $2, $3::jsonb, now() + ($6::bigint * interval '1 millisecond')
 		 FROM unnest($4::uuid[], $5::uuid[]) AS d(id, endpoint_id)`,
-		eventID, eventType, payload, ids, endpointIDs)
+		eventID, eventType, payload, ids, endpointIDs, firstAttemptDelay.Milliseconds())
 	return err
 }

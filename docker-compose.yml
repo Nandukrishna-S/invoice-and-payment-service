@@ -27,6 +27,16 @@ services:
     ports:
       - "127.0.0.1:8081:8081"
 
+  # Demo tooling: logs every webhook delivery and whether its signature verified.
+  # Register http://webhook-receiver:9000/hook as an endpoint, then give the receiver
+  # the endpoint's secret with POST localhost:9000/secrets (see the README).
+  webhook-receiver:
+    build:
+      context: .
+      target: webhookreceiver
+    ports:
+      - "127.0.0.1:9000:9000"
+
   api:
     build:
       context: .
