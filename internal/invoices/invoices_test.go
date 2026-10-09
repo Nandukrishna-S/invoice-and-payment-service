@@ -19,6 +19,7 @@ import (
 	"invoice-and-payment-service/internal/psp"
 	"invoice-and-payment-service/internal/testapi"
 	"invoice-and-payment-service/internal/testpsp"
+	"invoice-and-payment-service/internal/webhooks"
 )
 
 type lineJSON struct {
@@ -102,7 +103,8 @@ func newEnv(t *testing.T, provider PSPClient) (*testapi.Env, *atomic.Pointer[tim
 	var svc *Service
 	env := testapi.New(t, func(r chi.Router, pool *pgxpool.Pool) {
 		customers.RegisterRoutes(r, pool)
-		svc = NewService(pool, fiscalIST, provider)
+		webhooks.RegisterRoutes(r, pool)
+		svc = NewService(pool, fiscalIST, provider, webhooks.NewOutbox())
 		svc.now = func() time.Time { return *now.Load() }
 		RegisterRoutes(r, svc)
 	})

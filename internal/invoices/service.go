@@ -14,6 +14,7 @@ import (
 
 	"invoice-and-payment-service/internal/apperr"
 	"invoice-and-payment-service/internal/payments"
+	"invoice-and-payment-service/internal/webhooks"
 )
 
 const (
@@ -31,10 +32,24 @@ type Service struct {
 
 	payments *payments.Service
 	psp      PSPClient
+	outbox   *webhooks.Outbox
 }
 
-func NewService(pool *pgxpool.Pool, fiscalLoc *time.Location, psp PSPClient) *Service {
-	return &Service{pool: pool, fiscalLoc: fiscalLoc, now: time.Now, payments: payments.NewService(), psp: psp}
+func NewService(pool *pgxpool.Pool, fiscalLoc *time.Location, psp PSPClient, outbox *webhooks.Outbox) *Service {
+	return &Service{pool: pool, fiscalLoc: fiscalLoc, now: time.Now, payments: payments.NewService(), psp: psp, outbox: outbox}
+}
+
+// emit queues a webhook event for the invoice's business inside tx, so the event
+// is committed with the change that caused it and discarded with it. The
+// snapshot is the invoice exactly as GET /invoices/{id} shows it at that moment.
+func (s *Service) emit(ctx context.Context, tx pgx.Tx, eventType string, inv Invoice) error {
+	return s.outbox.Enqueue(ctx, tx, inv.BusinessID, eventType, s.now(), func(ctx context.Context) (any, error) {
+		snap, err := s.repo.get(ctx, tx, inv.BusinessID, inv.ID)
+		if err != nil {
+			return nil, err
+		}
+		return toResponse(snap), nil
+	})
 }
 
 func (s *Service) Finalize(ctx context.Context, businessID, id uuid.UUID) (Invoice, error) {
@@ -149,7 +164,10 @@ func (s *Service) Create(ctx context.Context, businessID uuid.UUID, in CreateInp
 		if err := s.repo.insertLineItems(ctx, tx, inv.ID, inv.LineItems); err != nil {
 			return err
 		}
-		return s.repo.insertTransition(ctx, tx, inv.ID, nil, StatusDraft, "created", nil)
+		if err := s.repo.insertTransition(ctx, tx, inv.ID, nil, StatusDraft, "created", nil); err != nil {
+			return err
+		}
+		return s.emit(ctx, tx, webhooks.EventInvoiceCreated, inv)
 	})
 	if err != nil {
 		return Invoice{}, err

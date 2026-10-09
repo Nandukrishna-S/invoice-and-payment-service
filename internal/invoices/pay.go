@@ -14,6 +14,7 @@ import (
 
 	"invoice-and-payment-service/internal/apperr"
 	"invoice-and-payment-service/internal/psp"
+	"invoice-and-payment-service/internal/webhooks"
 )
 
 const (
@@ -187,7 +188,10 @@ func (s *Service) ResolvePayment(ctx context.Context, paymentRef uuid.UUID, outc
 			if err != nil {
 				return err
 			}
-			return requireApplied(ok, att.ID)
+			if err := requireApplied(ok, att.ID); err != nil {
+				return err
+			}
+			return s.emit(ctx, tx, webhooks.EventInvoicePaymentFailed, inv)
 		}
 
 		ok, err := s.repo.resolveAttempt(ctx, tx, att.ID, AttemptSucceeded, nil)
@@ -206,7 +210,10 @@ func (s *Service) ResolvePayment(ctx context.Context, paymentRef uuid.UUID, outc
 		if err := s.repo.markPaid(ctx, tx, inv.ID, inv.Status); err != nil {
 			return err
 		}
-		return s.repo.insertTransition(ctx, tx, inv.ID, &inv.Status, StatusPaid, actionPay.reason, &att.ID)
+		if err := s.repo.insertTransition(ctx, tx, inv.ID, &inv.Status, StatusPaid, actionPay.reason, &att.ID); err != nil {
+			return err
+		}
+		return s.emit(ctx, tx, webhooks.EventInvoicePaid, inv)
 	})
 }
 

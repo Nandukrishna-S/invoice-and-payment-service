@@ -25,6 +25,7 @@ import (
 	"invoice-and-payment-service/internal/invoices"
 	"invoice-and-payment-service/internal/psp"
 	"invoice-and-payment-service/internal/reconciler"
+	"invoice-and-payment-service/internal/webhooks"
 	"invoice-and-payment-service/migrations"
 )
 
@@ -60,7 +61,7 @@ func main() {
 	}
 
 	pspClient := psp.NewClient(cfg.PSPBaseURL, cfg.PSPConnectTimeout, cfg.PSPTotalTimeout)
-	invoiceSvc := invoices.NewService(pool, cfg.FiscalLocation, pspClient)
+	invoiceSvc := invoices.NewService(pool, cfg.FiscalLocation, pspClient, webhooks.NewOutbox())
 
 	r := chi.NewRouter()
 	r.Use(httpx.RequestID, httpx.Recoverer)
@@ -72,6 +73,7 @@ func main() {
 		r.Use(auth.Middleware(authSvc))
 		customers.RegisterRoutes(r, pool)
 		invoices.RegisterRoutes(r, invoiceSvc)
+		webhooks.RegisterRoutes(r, pool)
 	})
 
 	srv := &http.Server{
