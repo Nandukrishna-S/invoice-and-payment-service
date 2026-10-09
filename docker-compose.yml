@@ -15,8 +15,22 @@ services:
       timeout: 3s
       retries: 20
 
+  mockpsp:
+    build:
+      context: .
+      target: mockpsp
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://invoice:invoice@postgres:5432/invoice?sslmode=disable
+    ports:
+      - "127.0.0.1:8081:8081"
+
   api:
-    build: .
+    build:
+      context: .
+      target: api
     depends_on:
       postgres:
         condition: service_healthy

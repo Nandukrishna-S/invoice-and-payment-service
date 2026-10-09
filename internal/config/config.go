@@ -75,3 +75,44 @@ func envString(key, def string) string {
 	}
 	return def
 }
+
+// PSPConfig is the mock PSP binary's configuration.
+type PSPConfig struct {
+	HTTPAddr    string
+	DatabaseURL string
+	LogLevel    slog.Level
+	// ProcessingDelay is how long tok_timeout charges stay "processing".
+	ProcessingDelay time.Duration
+	ShutdownTimeout time.Duration
+}
+
+func LoadPSP() (PSPConfig, error) {
+	cfg := PSPConfig{
+		HTTPAddr:        envString("PSP_HTTP_ADDR", ":8081"),
+		DatabaseURL:     os.Getenv("DATABASE_URL"),
+		LogLevel:        slog.LevelInfo,
+		ProcessingDelay: 30 * time.Second,
+		ShutdownTimeout: 15 * time.Second,
+	}
+	if cfg.DatabaseURL == "" {
+		return PSPConfig{}, fmt.Errorf("DATABASE_URL is required")
+	}
+	if v := os.Getenv("LOG_LEVEL"); v != "" {
+		if err := cfg.LogLevel.UnmarshalText([]byte(v)); err != nil {
+			return PSPConfig{}, fmt.Errorf("LOG_LEVEL must be debug, info, warn or error, got %q", v)
+		}
+	}
+	for env, dst := range map[string]*time.Duration{
+		"PSP_PROCESSING_DELAY": &cfg.ProcessingDelay,
+		"SHUTDOWN_TIMEOUT":     &cfg.ShutdownTimeout,
+	} {
+		if v := os.Getenv(env); v != "" {
+			d, err := time.ParseDuration(v)
+			if err != nil || d <= 0 {
+				return PSPConfig{}, fmt.Errorf("%s must be a positive duration, got %q", env, v)
+			}
+			*dst = d
+		}
+	}
+	return cfg, nil
+}

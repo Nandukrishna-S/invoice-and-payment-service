@@ -63,3 +63,48 @@ func TestLoadInvalid(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadPSPDefaultsAndOverrides(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://x")
+	for _, k := range []string{"PSP_HTTP_ADDR", "LOG_LEVEL", "PSP_PROCESSING_DELAY", "SHUTDOWN_TIMEOUT"} {
+		t.Setenv(k, "")
+	}
+	cfg, err := LoadPSP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTPAddr != ":8081" || cfg.ProcessingDelay != 30*time.Second || cfg.ShutdownTimeout != 15*time.Second || cfg.LogLevel != slog.LevelInfo {
+		t.Fatalf("unexpected defaults: %+v", cfg)
+	}
+
+	t.Setenv("PSP_HTTP_ADDR", ":9999")
+	t.Setenv("PSP_PROCESSING_DELAY", "2s")
+	t.Setenv("SHUTDOWN_TIMEOUT", "1s")
+	t.Setenv("LOG_LEVEL", "debug")
+	cfg, err = LoadPSP()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTPAddr != ":9999" || cfg.ProcessingDelay != 2*time.Second || cfg.ShutdownTimeout != time.Second || cfg.LogLevel != slog.LevelDebug {
+		t.Fatalf("unexpected overrides: %+v", cfg)
+	}
+}
+
+func TestLoadPSPInvalid(t *testing.T) {
+	tests := []struct{ name, key, val string }{
+		{"missing database url", "DATABASE_URL", ""},
+		{"bad log level", "LOG_LEVEL", "loud"},
+		{"bad processing delay", "PSP_PROCESSING_DELAY", "forever"},
+		{"zero processing delay", "PSP_PROCESSING_DELAY", "0s"},
+		{"negative shutdown timeout", "SHUTDOWN_TIMEOUT", "-1s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("DATABASE_URL", "postgres://x")
+			t.Setenv(tt.key, tt.val)
+			if _, err := LoadPSP(); err == nil {
+				t.Fatalf("expected an error for %s=%q", tt.key, tt.val)
+			}
+		})
+	}
+}

@@ -83,14 +83,9 @@ func Migrate(databaseURL string, migrations fs.FS, table string) error {
 }
 
 func newMigrate(databaseURL string, migrations fs.FS, table string) (*migrate.Migrate, error) {
-	u, err := url.Parse(databaseURL)
+	u, err := parseDatabaseURL(databaseURL)
 	if err != nil {
-		// url.Error quotes the whole URL, password included; keep only the reason.
-		var ue *url.Error
-		if errors.As(err, &ue) {
-			err = ue.Err
-		}
-		return nil, fmt.Errorf("parse database url: %w", err)
+		return nil, err
 	}
 	u.Scheme = "pgx5"
 	q := u.Query()
@@ -109,4 +104,46 @@ func newMigrate(databaseURL string, migrations fs.FS, table string) (*migrate.Mi
 		return nil, fmt.Errorf("open migrator: %w", err)
 	}
 	return m, nil
+}
+
+func parseDatabaseURL(databaseURL string) (*url.URL, error) {
+	u, err := url.Parse(databaseURL)
+	if err != nil {
+		// url.Error quotes the whole URL, password included; keep only the reason.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return nil, fmt.Errorf("parse database url: %w", err)
+	}
+	return u, nil
+}
+
+// WithSearchPath returns the URL with every connection's search_path set to
+// schema, so unqualified table names resolve there.
+func WithSearchPath(databaseURL, schema string) (string, error) {
+	u, err := parseDatabaseURL(databaseURL)
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	q.Set("search_path", schema)
+	u.RawQuery = q.Encode()
+	return u.String(), nil
+}
+
+// EnsureSchema creates the schema if it is missing; golang-migrate needs it to
+// exist before it can create its bookkeeping table there.
+func EnsureSchema(ctx context.Context, databaseURL, schema string) error {
+	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		return fmt.Errorf("connect to database: %w", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	if _, err := conn.Exec(ctx, "CREATE SCHEMA IF NOT EXISTS "+pgx.Identifier{schema}.Sanitize()); err != nil {
+		return fmt.Errorf("create schema %s: %w", schema, err)
+	}
+	return nil
 }

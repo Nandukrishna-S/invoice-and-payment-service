@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"io/fs"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"invoice-and-payment-service/internal/testutil"
 	"invoice-and-payment-service/migrations"
+	"invoice-and-payment-service/migrations/psp"
 )
 
 var fakeMigrations = fstest.MapFS{
@@ -197,5 +199,76 @@ func TestPoolAppliesSearchPathToEveryConnection(t *testing.T) {
 	}
 	if count != n {
 		t.Fatalf("checked %d connections, want %d", count, n)
+	}
+}
+
+// The mock PSP's migrations must survive up -> down -> up like the API's.
+func TestPSPMigrationsRoundTrip(t *testing.T) {
+	url := testutil.NewSchema(t)
+	if err := Migrate(url, psp.FS, "schema_migrations"); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	m, err := newMigrate(url, psp.FS, "schema_migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = m.Close() }()
+	if err := m.Down(); err != nil {
+		t.Fatalf("down: %v", err)
+	}
+	if err := Migrate(url, psp.FS, "schema_migrations"); err != nil {
+		t.Fatalf("up again: %v", err)
+	}
+}
+
+// The path the mockpsp binary takes at startup: create its schema, point the
+// connection at it, migrate. Its tables must land there, not in the API's schema.
+func TestEnsureSchemaAndWithSearchPathPlaceTablesInTheSchema(t *testing.T) {
+	testutil.NewSchema(t) // skips when TEST_DATABASE_URL is unset
+	base := os.Getenv("TEST_DATABASE_URL")
+	ctx := context.Background()
+	const schema = "psp_startup_test"
+
+	cleanup := func() {
+		pool, err := NewPool(ctx, base, 1)
+		if err == nil {
+			_, _ = pool.Exec(ctx, "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
+			pool.Close()
+		}
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	for i := 0; i < 2; i++ { // the second call proves it is idempotent
+		if err := EnsureSchema(ctx, base, schema); err != nil {
+			t.Fatalf("EnsureSchema #%d: %v", i+1, err)
+		}
+	}
+	url, err := WithSearchPath(base, schema)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(url, psp.FS, "schema_migrations"); err != nil {
+		t.Fatal(err)
+	}
+
+	pool, err := NewPool(ctx, base, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var inPSP, bookkeeping bool
+	err = pool.QueryRow(ctx, `SELECT
+		EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'charges'),
+		EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'schema_migrations')`,
+		schema).Scan(&inPSP, &bookkeeping)
+	if err != nil || !inPSP || !bookkeeping {
+		t.Fatalf("charges in schema=%v, own migrations table=%v, err=%v", inPSP, bookkeeping, err)
+	}
+}
+
+func TestWithSearchPathRedactsBadURLs(t *testing.T) {
+	if _, err := WithSearchPath("postgres://user:s3cretpw@host:notaport/db", "psp"); err == nil || strings.Contains(err.Error(), "s3cretpw") {
+		t.Fatalf("must fail without leaking the password: %v", err)
 	}
 }
