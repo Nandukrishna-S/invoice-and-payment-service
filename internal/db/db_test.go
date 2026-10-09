@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"io/fs"
+	"strings"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -71,6 +72,45 @@ func TestMigrateEmptySetIsNotAnError(t *testing.T) {
 	url := testutil.NewSchema(t)
 	if err := Migrate(url, fstest.MapFS{}, "schema_migrations"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A rollback deploy runs an older binary against a newer schema; that must fail
+// the start instead of serving against a schema the code doesn't know.
+func TestMigrateFailsWhenDatabaseIsAheadOfBinary(t *testing.T) {
+	url := testutil.NewSchema(t)
+	two := fstest.MapFS{
+		"000001_a.up.sql":   {Data: []byte("CREATE TABLE a (id BIGINT);")},
+		"000001_a.down.sql": {Data: []byte("DROP TABLE a;")},
+		"000002_b.up.sql":   {Data: []byte("CREATE TABLE b (id BIGINT);")},
+		"000002_b.down.sql": {Data: []byte("DROP TABLE b;")},
+	}
+	one := fstest.MapFS{
+		"000001_a.up.sql":   two["000001_a.up.sql"],
+		"000001_a.down.sql": two["000001_a.down.sql"],
+	}
+	if err := Migrate(url, two, "schema_migrations"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(url, one, "schema_migrations"); err == nil {
+		t.Fatal("older binary against a newer schema must return an error")
+	}
+	if err := Migrate(url, fstest.MapFS{}, "schema_migrations"); err == nil {
+		t.Fatal("an empty migration set against a migrated database must return an error")
+	}
+}
+
+// A typo in DATABASE_URL must not put the password into the startup error.
+func TestMalformedURLErrorsDoNotLeakThePassword(t *testing.T) {
+	const bad = "postgres://user:s3cretpw@host:notaport/db"
+
+	_, err := newMigrate(bad, fstest.MapFS{}, "t")
+	if err == nil || strings.Contains(err.Error(), "s3cretpw") {
+		t.Fatalf("migrate error must exist and not contain the password: %v", err)
+	}
+	_, err = NewPool(context.Background(), bad, 1)
+	if err == nil || strings.Contains(err.Error(), "s3cretpw") {
+		t.Fatalf("pool error must exist and not contain the password: %v", err)
 	}
 }
 

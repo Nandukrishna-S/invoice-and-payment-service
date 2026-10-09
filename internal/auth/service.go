@@ -5,10 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+const seedTimeout = 15 * time.Second
 
 type Service struct {
 	pool *pgxpool.Pool
@@ -52,6 +55,8 @@ func (s *Service) Seed(ctx context.Context, demoKey string) (generatedKey string
 		return "", fmt.Errorf("DEMO_API_KEY must be %q followed by 64 lowercase hex characters", keyPrefix)
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, seedTimeout)
+	defer cancel()
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return "", err

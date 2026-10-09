@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -154,7 +155,7 @@ func TestAuthenticateRejectsUnknownMalformedAndRevoked(t *testing.T) {
 
 	other, _ := GenerateKey()
 	for name, k := range map[string]string{"unknown": other, "malformed": "garbage", "empty": ""} {
-		if _, err := svc.Authenticate(ctx, k); err != ErrUnauthorized {
+		if _, err := svc.Authenticate(ctx, k); !errors.Is(err, ErrUnauthorized) {
 			t.Errorf("%s: got %v, want ErrUnauthorized", name, err)
 		}
 	}
@@ -167,7 +168,7 @@ func TestAuthenticateRejectsUnknownMalformedAndRevoked(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
 	defer slog.SetDefault(prev)
 
-	if _, err := svc.Authenticate(ctx, key); err != ErrUnauthorized {
+	if _, err := svc.Authenticate(ctx, key); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("revoked: got %v, want ErrUnauthorized", err)
 	}
 	out := logs.String()

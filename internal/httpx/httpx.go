@@ -3,6 +3,7 @@
 package httpx
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -14,7 +15,11 @@ import (
 	"invoice-and-payment-service/internal/apperr"
 )
 
-const maxBodyBytes = 1 << 20 // 1 MiB
+const (
+	maxBodyBytes = 1 << 20 // 1 MiB
+	// statusClientClosedRequest is nginx's convention; it only shows up in access logs.
+	statusClientClosedRequest = 499
+)
 
 type errorEnvelope struct {
 	Error errorBody `json:"error"`
@@ -39,6 +44,13 @@ func WriteJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
 func WriteError(w http.ResponseWriter, r *http.Request, err error) {
 	var ae *apperr.Error
 	if !errors.As(err, &ae) {
+		// The client hung up mid-request: nobody reads a response, and it is not our
+		// failure. A timeout (DeadlineExceeded) is ours and still falls through to a 500.
+		if errors.Is(err, context.Canceled) && errors.Is(r.Context().Err(), context.Canceled) {
+			slog.DebugContext(r.Context(), "client closed request", "error", err)
+			w.WriteHeader(statusClientClosedRequest)
+			return
+		}
 		ae = apperr.ErrInternal.Wrap(err)
 	}
 	if ae.Status >= http.StatusInternalServerError {

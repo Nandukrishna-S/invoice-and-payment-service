@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"syscall"
@@ -15,6 +16,7 @@ import (
 
 	"invoice-and-payment-service/internal/auth"
 	"invoice-and-payment-service/internal/config"
+	"invoice-and-payment-service/internal/customers"
 	"invoice-and-payment-service/internal/db"
 	"invoice-and-payment-service/internal/health"
 	"invoice-and-payment-service/internal/httpx"
@@ -60,6 +62,7 @@ func main() {
 
 	r.Group(func(r chi.Router) {
 		r.Use(auth.Middleware(authSvc))
+		customers.RegisterRoutes(r, pool)
 	})
 
 	srv := &http.Server{
@@ -78,7 +81,13 @@ func main() {
 		}
 	}()
 
+	var pprofSrv *http.Server
+	if cfg.PPROFAddr != "" {
+		pprofSrv = startPprof(cfg.PPROFAddr)
+	}
+
 	<-ctx.Done()
+	stop() // restore default signal handling so a second Ctrl-C kills a stuck shutdown
 
 	slog.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
@@ -86,6 +95,28 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		slog.Error("shutdown", "error", err)
 	}
+	if pprofSrv != nil {
+		_ = pprofSrv.Shutdown(shutdownCtx)
+	}
+}
+
+// startPprof serves profiling endpoints on their own listener, never on the
+// public API port.
+func startPprof(addr string) *http.Server {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() {
+		slog.Info("pprof listening", "addr", addr)
+		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("pprof server", "error", err)
+		}
+	}()
+	return srv
 }
 
 // fatal exits immediately, so deferred cleanup is skipped; the process is dying anyway.

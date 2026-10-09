@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"net/url"
 	"os"
+	"strconv"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5" // registers the pgx5 driver
@@ -34,6 +36,13 @@ func NewPool(ctx context.Context, databaseURL string, maxConns int32) (*pgxpool.
 		return nil, fmt.Errorf("parse database url: %w", err)
 	}
 	cfg.MaxConns = maxConns
+	if cfg.ConnConfig.ConnectTimeout == 0 {
+		cfg.ConnConfig.ConnectTimeout = connectTimeout
+	}
+	// Bounds the first connection too, so a database that accepts and then
+	// stalls can't hang startup.
+	ctx, cancel := context.WithTimeout(ctx, connectTimeout)
+	defer cancel()
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("open pool: %w", err)
@@ -45,9 +54,12 @@ func NewPool(ctx context.Context, databaseURL string, maxConns int32) (*pgxpool.
 	return pool, nil
 }
 
+const connectTimeout = 10 * time.Second
+
 // Migrate applies all pending up migrations from the root of migrations.
 // table names the golang-migrate bookkeeping table, so several services can
-// share one database. An empty migration set is not an error.
+// share one database. An empty migration set on a fresh database is not an
+// error; a database already ahead of the binary's migrations is.
 func Migrate(databaseURL string, migrations fs.FS, table string) error {
 	m, err := newMigrate(databaseURL, migrations, table)
 	if err != nil {
@@ -55,24 +67,37 @@ func Migrate(databaseURL string, migrations fs.FS, table string) error {
 	}
 	defer func() { _, _ = m.Close() }()
 
+	_, _, versionErr := m.Version()
+	fresh := errors.Is(versionErr, migrate.ErrNilVersion)
+
 	err = m.Up()
-	if errors.Is(err, migrate.ErrNoChange) || errors.Is(err, os.ErrNotExist) {
+	switch {
+	case err == nil, errors.Is(err, migrate.ErrNoChange):
+		return nil
+	case fresh && errors.Is(err, os.ErrNotExist):
+		// No migration files at all. On a database that already has a version, the
+		// same error means the binary is older than the schema, which must fail.
 		return nil
 	}
-	if err != nil {
-		return fmt.Errorf("apply migrations: %w", err)
-	}
-	return nil
+	return fmt.Errorf("apply migrations: %w", err)
 }
 
 func newMigrate(databaseURL string, migrations fs.FS, table string) (*migrate.Migrate, error) {
 	u, err := url.Parse(databaseURL)
 	if err != nil {
+		// url.Error quotes the whole URL, password included; keep only the reason.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
 		return nil, fmt.Errorf("parse database url: %w", err)
 	}
 	u.Scheme = "pgx5"
 	q := u.Query()
 	q.Set("x-migrations-table", table)
+	if q.Get("connect_timeout") == "" {
+		q.Set("connect_timeout", strconv.Itoa(int(connectTimeout.Seconds())))
+	}
 	u.RawQuery = q.Encode()
 
 	src, err := iofs.New(migrations, ".")

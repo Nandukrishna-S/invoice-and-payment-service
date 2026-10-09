@@ -16,6 +16,8 @@ type Config struct {
 	DBMaxConns      int32
 	LogLevel        slog.Level
 	ShutdownTimeout time.Duration
+	// PPROFAddr enables pprof on a separate listener when set; keep it on localhost.
+	PPROFAddr string
 	// DemoAPIKey is for local development only and must never be set in production.
 	DemoAPIKey string
 }
@@ -30,6 +32,7 @@ func Load() (Config, error) {
 		LogLevel:        slog.LevelInfo,
 		ShutdownTimeout: 15 * time.Second,
 		DemoAPIKey:      os.Getenv("DEMO_API_KEY"),
+		PPROFAddr:       os.Getenv("PPROF_ADDR"),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("DATABASE_URL is required")

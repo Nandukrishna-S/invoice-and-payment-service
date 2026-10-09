@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -132,6 +133,52 @@ func TestWriteError(t *testing.T) {
 			t.Fatal("internal error text leaked to the client")
 		}
 	})
+}
+
+func TestWriteErrorWhenTheClientDisconnected(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	defer slog.SetDefault(prev)
+
+	cancelled := func() *http.Request {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+	}
+	live := func() *http.Request { return httptest.NewRequest(http.MethodGet, "/", nil) }
+	wrapped := func(err error) error { return fmt.Errorf("query failed: %w", err) }
+
+	tests := []struct {
+		name       string
+		req        *http.Request
+		err        error
+		wantStatus int
+		wantBody   bool
+		wantLogged bool // an error-level log line
+	}{
+		{"client cancelled mid-query", cancelled(), wrapped(context.Canceled), 499, false, false},
+		{"our own timeout is still a 500", live(), wrapped(context.DeadlineExceeded), 500, true, true},
+		{"cancel not caused by the client is still a 500", live(), wrapped(context.Canceled), 500, true, true},
+		{"cancelled client but a real failure", cancelled(), errors.New("constraint violated"), 500, true, true},
+		{"cancelled client with a 4xx stays a 4xx", cancelled(), apperr.Validation("x", "bad"), 422, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs.Reset()
+			rec := httptest.NewRecorder()
+			WriteError(rec, tt.req, tt.err)
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.wantStatus)
+			}
+			if (rec.Body.Len() > 0) != tt.wantBody {
+				t.Fatalf("body present = %v, want %v: %q", rec.Body.Len() > 0, tt.wantBody, rec.Body.String())
+			}
+			if logged := strings.Contains(logs.String(), `"level":"ERROR"`); logged != tt.wantLogged {
+				t.Fatalf("error logged = %v, want %v: %s", logged, tt.wantLogged, logs.String())
+			}
+		})
+	}
 }
 
 func router() chi.Router {
