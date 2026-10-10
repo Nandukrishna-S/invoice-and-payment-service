@@ -99,4 +99,4 @@ The integration tests use a real PostgreSQL and a real mock PSP. They are skippe
 
 ## Demo video
 
-_Placeholder: link to the demo video goes here._
+_Placeholder: https://drive.google.com/file/d/1x3ljjlRwCxqwEM0PXB8VOsWMHR0dx369/view?usp=drive_link, https://drive.google.com/file/d/1T9ZmiYcQMf782b-_mDwRyi-5DL1DBTc3/view?usp=drive_link
